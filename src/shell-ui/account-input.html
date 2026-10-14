@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>添加账号 · DeepSeek Chat</title>
+<!--
+  添加自定义账号的输入窗口（本地页面）。
+  只做一件事：收一个账号名并回传主进程；**不做任何校验决策**（主进程会再校验一次）。
+-->
+<style>
+  :root { color-scheme: dark light; }
+  body {
+    margin: 0; padding: 16px 18px; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #15161b; color: #e8e8ea;
+  }
+  p { margin: 0 0 8px; }
+  .hint { color: #9aa0ad; font-size: 12px; }
+  input {
+    width: 100%; padding: 8px 10px; margin: 4px 0 8px;
+    font: inherit; color: inherit; background: #0f1015;
+    border: 1px solid #33353f; border-radius: 6px;
+  }
+  input:focus { outline: none; border-color: #3a7fe0; }
+  .err { color: #f08a8a; font-size: 12px; min-height: 18px; }
+  .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+  button {
+    padding: 7px 16px; font: inherit; cursor: pointer; border-radius: 6px;
+    background: #262932; color: #dfe3ea; border: 1px solid #383b46;
+  }
+  button.primary { background: #2f6fd0; border-color: #2f6fd0; color: #fff; }
+  button.primary:hover { background: #3a7fe0; }
+</style>
+</head>
+<body>
+  <p>账号名会用于 <b>登录分区</b> 与 <b>本地归档目录</b>，不同账号的数据互相隔离。</p>
+  <input id="name" placeholder="例如 home / test1" autocomplete="off" spellcheck="false" />
+  <p class="hint">只允许字母、数字、点、下划线、连字符；必须以字母或数字开头（≤128 字符）。</p>
+  <div class="err" id="err"></div>
+  <div class="row">
+    <button id="cancel" type="button">取消</button>
+    <button id="ok" class="primary" type="button">确定并切换</button>
+  </div>
+<script>
+  const api = window.dskAccountInput;
+  const $name = document.getElementById('name');
+  const $err = document.getElementById('err');
+  const re = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+  function submit() {
+    const v = $name.value.trim();
+    if (v === '') { $err.textContent = '请输入账号名'; return; }
+    if (!re.test(v) || v.includes('..')) { $err.textContent = '账号名不符合规则（字母/数字开头，只用 . _ -）'; return; }
+    api.submit(v);
+  }
+
+  $name.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit();
+    if (e.key === 'Escape') api.cancel();
+  });
+  document.getElementById('ok').addEventListener('click', submit);
+  document.getElementById('cancel').addEventListener('click', () => api.cancel());
+  $name.focus();
+</script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+{
+  "name": "dsk-desktop",
+  "version": "1.0.1",
+  "private": true,
+  "description": "本机自用：DeepSeek 免费网页版的桌面壳（非官方软件，请勿公开分发）",
+  "type": "module",
+  "main": "src/main/entry.mjs",
+  "scripts": {
+    "app": "node scripts/launch.mjs src/main/main.ts",
+    "app:selftest": "node scripts/launch.mjs src/main/main.ts --selftest",
+    "spike": "node scripts/launch.mjs spike/main.mjs",
+    "spike:auto": "node scripts/launch.mjs spike/main.mjs --auto",
+    "spike:auto:main": "node scripts/launch.mjs spike/main.mjs --auto --session=main",
+    "setup:electron": "node scripts/setup-electron.mjs",
+    "check:strip-only": "node scripts/check-strip-only.mjs",
+    "check": "node scripts/check-strip-only.mjs && tsc --noEmit && vitest run",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "m0:freeze": "node spike/m0-freeze.mjs",
+    "registry:scan": "node spike/registry-scan.mjs",
+    "dist": "node scripts/package.mjs",
+    "dist:dir": "node scripts/package.mjs --dir"
+  },
+  "build": {
+    "appId": "com.local.dskdesktop",
+    "productName": "dsk-desktop",
+    "copyright": "本机自用，非官方分发",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/main/**/*",
+      "src/session/**/*",
+      "src/shared/**/*",
+      "src/store/**/*",
+      "src/features/**/*",
+      "src/inject/**/*",
+      "src/shell-ui/**/*",
+      "assets/icon.ico",
+      "assets/icon-256.png",
+      "assets/tray-16.png",
+      "assets/tray-32.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DeepSeek Chat",
+      "artifactName": "dsk-desktop-setup-${version}.${ext}",
+      "uninstallDisplayName": "dsk-desktop"
+    },
+    "portable": {
+      "artifactName": "dsk-desktop-portable-${version}.${ext}"
+    }
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "electron-winstaller"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "5.0.3",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

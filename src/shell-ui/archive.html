@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>本地归档 · DeepSeek Chat</title>
+<!--
+  本地归档查看器（只读）。
+  安全要点：
+   - 无任何外部资源、无内联事件属性；所有内容用 textContent 写入（杜绝 HTML 注入）；
+   - 只通过 preload 暴露的白名单 IPC 取数据，页面本身没有 Node 能力。
+  合规要点（R3）：预览里**始终显示 AI 生成标识**，且不得提供任何隐藏它/去掉它的选项。
+-->
+<style>
+  :root { color-scheme: dark light; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; flex-direction: column;
+    font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #14151a; color: #e8e8ea;
+  }
+  header {
+    display: flex; gap: 10px; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid #2a2c34; background: #1a1b21;
+  }
+  header input {
+    flex: 1; min-width: 200px; padding: 7px 10px;
+    font: inherit; color: inherit; background: #101116;
+    border: 1px solid #33353f; border-radius: 6px;
+  }
+  header input:focus { outline: none; border-color: #3a7fe0; }
+  header button {
+    padding: 7px 12px; font: inherit; color: #dfe3ea; cursor: pointer;
+    background: #262932; border: 1px solid #383b46; border-radius: 6px;
+  }
+  header button:hover { background: #2f3340; }
+  .stat { color: #9aa0ad; font-size: 12px; white-space: nowrap; }
+  main { flex: 1; display: flex; min-height: 0; }
+  aside {
+    width: 300px; min-width: 220px; overflow: auto;
+    border-right: 1px solid #2a2c34; background: #17181e;
+  }
+  .item {
+    padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #23252c;
+  }
+  .item:hover { background: #1f2129; }
+  .item.active { background: #263042; }
+  .item .title { font-weight: 600; word-break: break-word; }
+  .item .meta { margin-top: 3px; color: #8b91a0; font-size: 11px; }
+  .item .snippet {
+    margin-top: 5px; padding: 5px 7px; color: #b9c0cc; font-size: 11px;
+    background: #101116; border-left: 2px solid #3a7fe0; border-radius: 0 4px 4px 0;
+    word-break: break-word;
+  }
+  section { flex: 1; overflow: auto; padding: 14px 18px; min-width: 0; }
+  .empty { color: #7f8593; padding: 24px 4px; }
+  .notice {
+    padding: 9px 12px; margin-bottom: 14px; font-size: 12px;
+    background: #2a2113; border: 1px solid #5a4a1e; border-radius: 6px; color: #f0c674;
+  }
+  h1 { margin: 0 0 6px; font-size: 17px; }
+  .kv { color: #9aa0ad; font-size: 12px; margin-bottom: 14px; word-break: break-all; }
+  .kv span { margin-right: 12px; }
+  .msg { margin: 0 0 16px; padding: 12px 14px; background: #1a1b21; border: 1px solid #2a2c34; border-radius: 8px; }
+  .msg .role { font-weight: 600; margin-bottom: 4px; }
+  .msg.user .role { color: #7fb1ff; }
+  .msg.assistant .role { color: #7ee0a8; }
+  .msg .time { color: #7f8593; font-size: 11px; font-weight: 400; }
+  .msg .body { white-space: pre-wrap; word-break: break-word; margin-top: 6px; }
+  .msg .reason {
+    margin-top: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+    color: #c9cfda; background: #101116; border-left: 3px solid #6b5cc4; border-radius: 0 4px 4px 0;
+    font-size: 12px;
+  }
+  .msg .reason::before { content: "深度思考（模型推理，非最终回答）"; display: block; color: #9d92e0; margin-bottom: 4px; }
+  .cites { margin-top: 8px; font-size: 12px; }
+  .cites div { color: #9aa0ad; word-break: break-all; }
+  .cites a { color: #7fb1ff; }
+  .actions { display: flex; gap: 8px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+  <header>
+    <input id="q" type="search" placeholder="搜索归档内容（空格分隔多个关键词，AND 语义；也搜深度思考）" />
+    <span class="stat" id="stat"></span>
+    <button id="refresh" type="button">刷新</button>
+  </header>
+  <main>
+    <aside id="list"><div class="empty">正在读取本地归档…</div></aside>
+    <section id="detail"><div class="empty">从左侧选择一个会话查看。</div></section>
+  </main>
+
+<script>
+  const api = window.dskArchive;
+  const $q = document.getElementById('q');
+  const $stat = document.getElementById('stat');
+  const $list = document.getElementById('list');
+  const $detail = document.getElementById('detail');
+  let currentId = null;
+
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text; // 只用 textContent，杜绝注入
+    return n;
+  };
+
+  function fmtTime(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms)) return '未知时间';
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function renderList(items, opts) {
+    $list.replaceChildren();
+    if (items.length === 0) {
+      $list.appendChild(el('div', 'empty', opts && opts.emptyText ? opts.emptyText : '（还没有归档的会话）'));
+      return;
+    }
+    for (const it of items) {
+      const row = el('div', 'item' + (it.conversationId === currentId || it.id === currentId ? ' active' : ''));
+      row.appendChild(el('div', 'title', it.title || '(无标题)'));
+      row.appendChild(el('div', 'meta', fmtTime(it.updatedAt) + ' · ' + (it.messageCount !== undefined ? it.messageCount + ' 条' : (it.matches ? it.matches.length + ' 处命中' : ''))));
+      if (it.snippetText) row.appendChild(el('div', 'snippet', it.snippetText));
+      row.addEventListener('click', () => { void openConversation(it.conversationId || it.id); });
+      $list.appendChild(row);
+    }
+  }
+
+  async function loadList() {
+    const q = $q.value.trim();
+    if (q === '') {
+      const list = await api.list();
+      currentId = currentId; // 保持选中
+      renderList(list, { emptyText: '（还没有归档的会话：产生一次新的回答后即可归档）' });
+      $stat.textContent = list.length + ' 个会话';
+      return;
+    }
+    const res = await api.search(q);
+    renderList(
+      res.hits.map((h) => ({
+        conversationId: h.conversationId,
+        title: h.title,
+        updatedAt: h.updatedAt,
+        matches: h.matches,
+        snippetText: h.matches && h.matches.length > 0 ? (h.matches[0].field === 'reasoning' ? '[思考] ' : h.matches[0].field === 'title' ? '[标题] ' : '') + h.matches[0].snippet : '',
+      })),
+      { emptyText: '（没有匹配的归档内容）' },
+    );
+    $stat.textContent = '命中 ' + res.total + ' 个会话';
+  }
+
+  async function openConversation(id) {
+    if (!id) return;
+    currentId = id;
+    for (const n of $list.querySelectorAll('.item')) n.classList.remove('active');
+    const conv = await api.read(id);
+    $detail.replaceChildren();
+    if (!conv) {
+      $detail.appendChild(el('div', 'empty', '读不到这个会话（可能已被清除）。'));
+      return;
+    }
+
+    // R3：标识块固定在顶部，且没有"隐藏它"的入口
+    $detail.appendChild(el('div', 'notice', '⚠️ 本内容由 AI 生成，请仔细甄别（本地归档回放，非官方页面）'));
+    $detail.appendChild(el('h1', '', conv.title || '(无标题)'));
+
+    const kv = el('div', 'kv');
+    kv.appendChild(el('span', '', '会话：' + conv.id));
+    kv.appendChild(el('span', '', '账号：' + conv.accountId));
+    kv.appendChild(el('span', '', '通道：' + conv.source + '/' + conv.fidelity));
+    kv.appendChild(el('span', '', '更新：' + fmtTime(conv.updatedAt)));
+    kv.appendChild(el('span', '', conv.messages.length + ' 条消息'));
+    $detail.appendChild(kv);
+
+    const actions = el('div', 'actions');
+    const md = el('button', '', '导出 Markdown');
+    md.type = 'button';
+    md.addEventListener('click', () => void api.exportArchive(conv.id, 'md'));
+    const js = el('button', '', '导出 JSON');
+    js.type = 'button';
+    js.addEventListener('click', () => void api.exportArchive(conv.id, 'json'));
+    actions.appendChild(md); actions.appendChild(js);
+    $detail.appendChild(actions);
+
+    if (conv.messages.length === 0) {
+      $detail.appendChild(el('div', 'empty', '（这个会话没有归档消息）'));
+    }
+    for (const m of conv.messages) {
+      const box = el('div', 'msg ' + (m.role === 'user' ? 'user' : 'assistant'));
+      const role = el('div', 'role');
+      role.appendChild(document.createTextNode(m.role === 'user' ? '我（用户）' : 'AI 助手'));
+      role.appendChild(el('span', 'time', '  ·  ' + fmtTime(m.createdAt)));
+      box.appendChild(role);
+      if (m.reasoning) box.appendChild(el('div', 'reason', m.reasoning));
+      if (m.text) box.appendChild(el('div', 'body', m.text));
+      if (m.citations && m.citations.length > 0) {
+        const c = el('div', 'cites');
+        c.appendChild(el('div', '', '引用来源（' + m.citations.length + '）'));
+        m.citations.forEach((ct, i) => {
+          const line = el('div', '', (i + 1) + '. ');
+          const a = el('a', '', ct.title || ct.url);
+          a.href = ct.url; // 只读展示；点击由主进程统一走系统浏览器
+          a.target = '_blank';
+          line.appendChild(a);
+          c.appendChild(line);
+        });
+        box.appendChild(c);
+      }
+      $detail.appendChild(box);
+    }
+  }
+
+  $q.addEventListener('keydown', (e) => { if (e.key === 'Enter') void loadList(); });
+  document.getElementById('refresh').addEventListener('click', () => void loadList());
+
+  void loadList();
+</script>
+</body>
+</html>

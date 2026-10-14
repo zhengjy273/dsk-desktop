@@ -1,0 +1,67 @@
+{
+  "$comment": "T0 产出：只由 Lead 维护。status 语义：verified=已实测可用；text-match=按可见文本匹配（模式名）；unverified=尚未取得稳定锚点，增强层必须对此降级而非抛错。",
+  "version": "0.1.0-m0",
+  "minAppVersion": "0.0.1",
+  "capturedAt": "2026-10-10",
+  "capturedFrom": "https://chat.deepseek.com/（已登录，空会话）",
+  "m2Probe": {
+    "at": "2026-10-10T19:52",
+    "result": "可用 8 / 失配 0 / 未验证降级 1（共 9）",
+    "note": "M2 只读探测 + 结构发现（托盘『诊断（写日志）』触发），含**生成中**状态实测。命中：composer（textarea）、messageList（[class*=message] 6）、reasoningBlock（[class*=think] 2~4）、messageAssistant（[class*=assistant] 1）、sendButton（div[role=button][class*=primary] 1）、modeDeepThink / modeSmartSearch / aiGeneratedNotice（可见文本）。生成中结构发现：div=211、原生 button=0、role=button=13、textarea=1、svg=29、[class*=markdown]=11。**generatingIndicator 在生成中 8 个候选全 0**，未找到稳定锚点（当前无消费方，不影响功能）。"
+  },
+  "notes": [
+    "M0 实测：站点使用 CSS Modules 哈希类名（如 _27c9245），图标按钮无 text / aria-label / data-testid。",
+    "因此本注册表只登记已验证稳定或明确语义的锚点；未验证项留空，由 M1 在 V3（发消息后）补齐。",
+    "引擎优先使用网络通道（DD-06），DOM 通道只承担少量交互；任何失配必须降级并上报 diagnostics（DD-05）。"
+  ],
+  "targets": {
+    "composer": {
+      "status": "verified",
+      "selectors": ["textarea"],
+      "fallback": ["[contenteditable=\"true\"]"],
+      "observed": "单个 textarea；class 含哈希段 _27c9245，故不依赖 class"
+    },
+    "messageList": {
+      "status": "verified",
+      "conditional": true,
+      "selectors": ["[class*=\"message\"]"],
+      "observed": "M2 结构发现实测命中 6 处（有历史消息的会话页）。注意：verified 表示**选择器有效、能选中节点**，语义（是否即消息列表容器）仍待人工确认。站点无原生 <button>，采用 ds-* 设计系统类名 + 哈希类名混合。"
+    },
+    "messageAssistant": {
+      "status": "verified",
+      "conditional": true,
+      "selectors": ["[class*=\"assistant\"]"],
+      "observed": "M2 **生成中**探测命中矩阵：[class*=assistant]=1（精确对应 1 条助手消息）、[class*=markdown]=11（正文内元素）、[class*=message][class*=ai]=1。取命中数为 1 的 [class*=assistant] 作为锚点。"
+    },
+    "reasoningBlock": {
+      "status": "verified",
+      "conditional": true,
+      "selectors": ["[class*=\"think\"]"],
+      "mustNotHide": true,
+      "observed": "M2 结构发现实测命中 2 处（会话页）。思考区块属站点内容：增强层不得隐藏、改写或以任何方式改变其呈现。"
+    },
+    "generatingIndicator": {
+      "status": "unverified",
+      "conditional": true,
+      "selectors": ["[class*=\"stop\"]", "[class*=\"loading\"]", "[class*=\"typing\"]", "[class*=\"generating\"]", "[class*=\"stream\"]", "[class*=\"cursor\"]", "[class*=\"pending\"]", "[class*=\"blink\"]"],
+      "mustNotHide": true,
+      "observed": "**生成中**实测（流式输出进行时）8 个候选**全为 0** —— stop/loading/typing/generating/stream/cursor/pending/blink 这些类名站点都不用。生成中结构发现：role=button 13、ds-button 13、ds-icon 24、svg 29，指示器可能靠 ds-icon+SVG 动画或哈希类名表达，**未找到稳定锚点**，故保持 unverified。另：『回答完成』通知已取消，此项当前无任何消费方，不影响功能。"
+    },
+    "aiGeneratedNotice": {
+      "status": "text-match",
+      "conditional": true,
+      "textMatch": "内容由 AI 生成",
+      "selectors": [],
+      "mustNotHide": true,
+      "observed": "R3 红线相关：M0 实测该文本可检测，但类名不可选（aiNoticeGuess=0），故登记为**文本锚点**而非类选择器。增强层在任何情况下都不得隐藏/改动它。"
+    },
+    "modeDeepThink": { "status": "text-match", "textMatch": "深度思考" },
+    "modeSmartSearch": { "status": "text-match", "textMatch": "智能搜索" },
+    "sendButton": {
+      "status": "verified",
+      "conditional": true,
+      "selectors": ["div[role=\"button\"][class*=\"primary\"]"],
+      "observed": "生成中实测：div[role=button][class*=primary]=1、[class*=filled]=1（同一按钮同时带这两个设计系统类）。**注意语义未确认**：该按钮在生成中可能是『停止』而非『发送』（同一 ds-button--primary 样式），故任何 UI 使用前必须再核对；本应用当前不点击该按钮。"
+    }
+  }
+}

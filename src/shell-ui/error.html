@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>加载失败</title>
+<!--
+  M1 · T1：本地错误页（file:// 加载，不请求网络）。
+  用户明确要求：加载失败或超时时**显示明确提示 + 重试按钮**，而不是留一片空白。
+  参数（query string）：code / desc / retry
+-->
+<style>
+  :root { color-scheme: dark light; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #0b0b0c; color: #e8e8ea;
+    font: 14px/1.7 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .box { max-width: 520px; padding: 28px 32px; text-align: center; }
+  h2 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+  .desc { margin: 0 0 6px; color: #f0a04b; }
+  .hint { margin: 0 0 20px; font-size: 12px; opacity: .65; }
+  button {
+    padding: 8px 22px; font: inherit; color: #fff; cursor: pointer;
+    background: #2f6fd0; border: 0; border-radius: 8px;
+  }
+  button:hover { background: #3a7fe0; }
+  button:disabled { opacity: .4; cursor: default; }
+  .url { margin-top: 18px; font-size: 11px; opacity: .45; word-break: break-all; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h2>页面没能加载出来</h2>
+    <p class="desc" id="desc"></p>
+    <p class="hint">
+      如果站点提示 “Rate Limit” 或 “操作过于频繁”，说明短时间内请求太多，请等一会儿再试。<br />
+      这个提示页是本地的，不会发起任何网络请求。
+    </p>
+    <button id="retry">重试</button>
+    <p class="url" id="url"></p>
+  </div>
+<script>
+  const p = new URLSearchParams(location.search);
+  const code = p.get('code') || '';
+  const desc = p.get('desc') || '未知原因';
+  const retry = p.get('retry') || '';
+
+  document.getElementById('desc').textContent = code ? `${desc}（code ${code}）` : desc;
+  document.getElementById('url').textContent = retry;
+
+  const btn = document.getElementById('retry');
+  if (retry) {
+    btn.addEventListener('click', () => {
+      location.href = retry;
+    });
+  } else {
+    btn.disabled = true;
+  }
+</script>
+</body>
+</html>

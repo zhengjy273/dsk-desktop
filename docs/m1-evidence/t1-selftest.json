@@ -1,0 +1,303 @@
+{
+  "electron": "44.7.0",
+  "chrome": "152.0.7977.130",
+  "node": "24.21.0",
+  "partition": "persist:dsk-personal",
+  "hotkey": "Control+Shift+D",
+  "loadTimeoutMs": 25000,
+  "userData": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5",
+  "logFile": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5\\logs\\app.log",
+  "proxyConfig": {
+    "mode": "direct",
+    "bypass": "<local>"
+  },
+  "proxyConfigValid": true,
+  "proxyApplied": {
+    "ok": true
+  },
+  "proxyResolved": "DIRECT",
+  "windowCreated": true,
+  "windowBounds": {
+    "x": 57,
+    "y": 29,
+    "width": 1167,
+    "height": 717
+  },
+  "trayCreated": true,
+  "mirrorStoreReady": true,
+  "mirrorStoreDir": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5\\mirror",
+  "mirrorAttached": true,
+  "hotkeyRegistered": false,
+  "pageUrl": "about:blank",
+  "pageTitle": "about:blank",
+  "selectorRegistryVersion": "0.1.0-m0",
+  "selectorSummary": "可用 0 / 失配 3 / 未验证降级 6（共 9）",
+  "selectorWarnings": [
+    {
+      "selector": "composer",
+      "hits": 0,
+      "lastOk": 0
+    },
+    {
+      "selector": "modeDeepThink",
+      "hits": 0,
+      "lastOk": 0
+    },
+    {
+      "selector": "modeSmartSearch",
+      "hits": 0,
+      "lastOk": 0
+    }
+  ],
+  "selectorVerdicts": [
+    {
+      "id": "composer",
+      "status": "verified",
+      "hits": 0,
+      "degraded": true,
+      "warn": true
+    },
+    {
+      "id": "messageList",
+      "status": "verified",
+      "hits": 0,
+      "degraded": true,
+      "warn": false
+    },
+    {
+      "id": "messageAssistant",
+      "status": "verified",
+      "hits": 0,
+      "degraded": true,
+      "warn": false
+    },
+    {
+      "id": "reasoningBlock",
+      "status": "verified",
+      "hits": 0,
+      "degraded": true,
+      "warn": false
+    },
+    {
+      "id": "generatingIndicator",
+      "status": "unverified",
+      "hits": 0,
+      "degraded": true,
+      "warn": false
+    },
+    {
+      "id": "aiGeneratedNotice",
+      "status": "text-match",
+      "hits": 0,
+      "degraded": true,
+      "warn": false
+    },
+    {
+      "id": "modeDeepThink",
+      "status": "text-match",
+      "hits": 0,
+      "degraded": true,
+      "warn": true
+    },
+    {
+      "id": "modeSmartSearch",
+      "status": "text-match",
+      "hits": 0,
+      "degraded": true,
+      "warn": true
+    },
+    {
+      "id": "sendButton",
+      "status": "verified",
+      "hits": 0,
+      "degraded": true,
+      "warn": false
+    }
+  ],
+  "selectorProbeAt": 1791898046420,
+  "singleInstanceLock": true,
+  "themeSource": "system",
+  "prefersDark": true,
+  "trayBounds": {
+    "x": 813,
+    "y": 752,
+    "width": 32,
+    "height": 48
+  },
+  "notificationsDisabled": true,
+  "contentViewCreated": true,
+  "mirrorStats": {
+    "captured": 0,
+    "failures": 0,
+    "lastError": null,
+    "attached": true,
+    "requests": 0
+  },
+  "contentChildCount": 1,
+  "contentBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1167,
+    "height": 717
+  },
+  "pageUrlNow": "about:blank",
+  "miniApiAvailable": {
+    "isFullScreen": true,
+    "setFullScreen": true,
+    "isMaximized": true,
+    "unmaximize": true,
+    "setBounds": true,
+    "setResizable": true,
+    "isResizable": true
+  },
+  "resizableNow": true,
+  "minimizeApiAvailable": {
+    "isMinimized": true,
+    "minimize": true,
+    "restore": true
+  },
+  "miniStateMachineHooked": true,
+  "alwaysOnTopBeforeMini": false,
+  "alwaysOnTopApplied": false,
+  "mini": false,
+  "miniSteps": [
+    "setResizable(true)",
+    "setSkipTaskbar(false)",
+    "restoreBounds"
+  ],
+  "miniBounds": {
+    "x": 85,
+    "y": 145,
+    "width": 1115,
+    "height": 577
+  },
+  "miniEnterForcesTop": true,
+  "miniEnterDisablesResize": true,
+  "miniExitRestoresResize": true,
+  "miniExitRestoresTopPolicy": false,
+  "miniExitRestoresTaskbar": true,
+  "miniEnterHidesTaskbar": true,
+  "minimized": false,
+  "minimizedBeforeMini": true,
+  "restoreCount": 2,
+  "miniFromMinimizedBounds": {
+    "x": 821,
+    "y": 225,
+    "width": 367,
+    "height": 485
+  },
+  "miniFromMinimizedSteps": [
+    "restore",
+    "setBounds",
+    "setResizable(false)",
+    "setSkipTaskbar(true)",
+    "alwaysOnTop"
+  ],
+  "miniFromMinimizedSane": true,
+  "miniExitFromMinimizedBounds": {
+    "x": 71,
+    "y": 87,
+    "width": 1141,
+    "height": 647
+  },
+  "miniExitFromMinimizedSane": true,
+  "menuTopDisabledWhileMini": true,
+  "menuTopLabelWhileMini": "置顶窗口（迷你窗强制）",
+  "menuTopCheckedWhileMini": true,
+  "menuTopEnabledWhenNormal": true,
+  "menuTopLabelWhenNormal": "置顶窗口",
+  "exportMarkdownHasAiNotice": true,
+  "exportJsonHasAiNotice": true,
+  "exportMarkdownFirstBlockIsNotice": true,
+  "exportJsonParsesWithFlag": true,
+  "proxyPacHttpRejected": true,
+  "proxyManualNeedsRules": true,
+  "proxyDirectValid": true,
+  "errorPageConfigured": true,
+  "errorPageExists": true,
+  "selectorRegistryLoaded": true,
+  "selectorTargetCount": 9,
+  "selectorDryRunSummary": "可用 0 / 失配 3 / 未验证降级 6（共 9）",
+  "selectorDryRunWarningCount": 3,
+  "iconIcoExists": true,
+  "iconPngExists": true,
+  "trayPngExists": true,
+  "trayIconLoaded": true,
+  "windowIconLoaded": true,
+  "trayIconSize": {
+    "width": 32,
+    "height": 32
+  },
+  "trayMenuLabels": [
+    "显示 / 隐藏",
+    "---",
+    "迷你窗",
+    "置顶窗口",
+    "---",
+    "查看本地归档…",
+    "导出归档",
+    "导出页面快照",
+    "---",
+    "诊断（写日志）",
+    "---",
+    "清除本地归档数据…",
+    "---",
+    "账号：personal",
+    "---",
+    "退出"
+  ],
+  "archiveSubmenuLabels": [
+    "当前会话 → Markdown（结构化）",
+    "当前会话 → JSON（结构化）"
+  ],
+  "snapshotSubmenuLabels": [
+    "Markdown",
+    "JSON"
+  ],
+  "diagnosisIsPlainItem": true,
+  "accountMenuLabel": "账号：personal",
+  "accountMenuItemCount": 7,
+  "accountMenuHasSignOut": true,
+  "accountMenuHasAdd": true,
+  "accountMenuHasDelete": true,
+  "accountMenuDeleteTargets": [
+    "work"
+  ],
+  "accountMenuOrderOk": true,
+  "currentAccount": "personal",
+  "accountFile": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5\\account.json",
+  "logFileConfigured": true,
+  "logFileExists": true,
+  "maximizedBeforeMini": true,
+  "minimizedAfterMaximize": true,
+  "miniFromMaxMinSteps": [
+    "restore",
+    "unmaximize",
+    "setBounds",
+    "setResizable(false)",
+    "setSkipTaskbar(true)",
+    "alwaysOnTop"
+  ],
+  "miniFromMaxMinHasRestore": true,
+  "miniFromMaxMinHasUnmaximize": true,
+  "miniFromMaxMinBoundsImmediate": {
+    "x": 78,
+    "y": 116,
+    "width": 1128,
+    "height": 612
+  },
+  "miniFromMaxMinBoundsSettled": {
+    "x": 816,
+    "y": 242,
+    "width": 367,
+    "height": 485
+  },
+  "miniFromMaxMinSaneSettled": true,
+  "miniExitFromMaxMinBoundsSettled": {
+    "x": 85,
+    "y": 145,
+    "width": 1115,
+    "height": 577
+  },
+  "miniExitFromMaxMinSaneSettled": true
+}

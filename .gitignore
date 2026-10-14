@@ -1,0 +1,38 @@
+node_modules/
+
+# ---- 本地运行数据：含登录态（userToken / settingsJwt），**绝不提交** ----
+.spike-userdata-main/
+.spike-userdata-auto/
+.spike-userdata-diag/
+
+# ---- 日志：含真实会话内容 ----
+logs/
+*.log
+
+# ---- 测试覆盖率产物（可再生） ----
+coverage/
+
+# ---- 证据目录 ----
+# m0-evidence：探测报告与注册表快照（体积大）
+# m2-evidence：**含真实对话样本**（sse-samples / request-samples）→ 一律不提交
+docs/m0-evidence/
+docs/m2-evidence/
+
+# ---- 构建产物 ----
+dist/
+out/
+release/
+# 打包辅助：scripts/package.mjs 生成的 pnpm shim（机器相关）
+.tools/
+
+# ---- 交付物：安装包 / 便携版 / 分发包 / 备份（体积大、机器相关，不入库）----
+dsk-desktop-分发包.zip
+dsk-desktop-backup-*.zip
+dsk-desktop-setup-*.exe
+dsk-desktop-portable-*.exe
+
+# ---- 编辑器/系统 ----
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
