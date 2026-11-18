@@ -1,199 +1,162 @@
-# dsk-desktop
+<p align="center"><img src="assets/icon-256.png" width="96" alt="dsk-desktop"></p>
 
-本机自用的 **DeepSeek 免费网页版（chat.deepseek.com）桌面壳**。
-当前阶段：**M0–M3 完成** —— 桌面壳（托盘 / 快捷键 / 迷你窗 / 主题 / 代理 / 错误页）
-+ 只读网络镜像与**双向结构化归档**（查看器 + 双路导出）+ **多账号**
-+ **打包分发**（NSIS 安装包 / 便携版，均已实测运行）。
-> 已按用户决定移除：**标签页**（与站点侧边栏重复）与**"回答完成"通知**（DOM 启发式误报多）。
-**使用中遇到问题的分类对照见 [docs/KNOWN-LIMITS.md](docs/KNOWN-LIMITS.md)**（哪些是设计决定、哪些是已知限制、哪些该报给我）。
+<h1 align="center">dsk-desktop</h1>
 
-> 完整方案见 [PLAN.md](PLAN.md)；合规约束与证据见 [docs/compliance.md](docs/compliance.md)；可行性验证见 [docs/M0-REPORT.md](docs/M0-REPORT.md)；M1 任务卡见 [docs/M1-TASKS.md](docs/M1-TASKS.md)。
+<p align="center">把 <a href="https://chat.deepseek.com">chat.deepseek.com</a> 免费网页版装进一个安静、本地优先的 Windows 桌面壳。</p>
 
-## 这是什么 / 不是什么
+<p align="center">
+  <img alt="version" src="https://img.shields.io/badge/version-1.1.5-blue">
+  <img alt="electron" src="https://img.shields.io/badge/Electron-44.7-47848F">
+  <img alt="license" src="https://img.shields.io/badge/usage-personal%20only-lightgrey">
+</p>
 
-- ✅ 一个 **Electron 壳**：用独立持久化分区加载官方站点，用户自行登录，附加桌面能力（托盘/多会话/本地归档/导出 —— M1 起）。
-- ❌ **不**逆向站点接口、**不**代持或落盘账号凭据、**不**隐藏站点的 AI 生成标识、**不**做账号共享。
-- ❌ 当前**不公开分发**。应用名与协议 6.2 的冲突已登记为「R4 明示例外」，公开分发前必须改名换图标。
+> **非官方项目**，与深度求索（DeepSeek）无任何关联。仅个人自用与学习，不提供任何担保。
+> 合规边界见 [docs/compliance.md](docs/compliance.md)，已知限制见 [docs/KNOWN-LIMITS.md](docs/KNOWN-LIMITS.md)。
 
-## 快速开始
+---
+
+## 这是什么
+
+一个 Electron 44 壳：用独立的持久化分区加载官方站点，你正常登录，壳本身只额外提供桌面能力 ——
+托盘、全局快捷键、迷你窗、多账号、限额可视化、本地归档与导出。
+
+**不做什么**（这些是硬约束，单测与运行期自检都有机器断言）：
+
+- 不逆向站点接口、不新增/重放 API 请求、不构造 `x-ds-pow-response`；
+- 不读取输入框内容、不碰 cookie / localStorage / 任何账号凭据；
+- 不隐藏或替换站点自带的「内容由 AI 生成，请仔细甄别」标识（只在其**后面追加**会话用量）；
+- 不做自动发言、自动点击、账号共享。
+
+## 功能
+
+| 能力 | 说明 |
+|---|---|
+| 桌面壳 | 单会话视图加载官方站点，托盘常驻，全局快捷键显隐，关窗最小化到托盘 |
+| 迷你窗 | 托盘一键切 380×520 逻辑像素小窗（0.8 缩放），退出还原原尺寸与位置 |
+| 多账号 | 每个账号独立 `persist:dsk-<account>` 分区；托盘切换 / 新增 / 删除 / 退出登录，切换需重启应用 |
+| 限额可视化 | 托盘 tooltip、托盘账号行、输入框右上角浮层展示模型额度、单次输入上限、本会话已用 token |
+| 悬浮额度面板 | 六行明细，可拖动、跨会话记忆位置、「恢复默认位置」一键回贴输入框 |
+| 会话用量 | 在 AI 生成标识后追加「 · 本会话已用 N tokens」，不遮挡原文 |
+| 本地归档 | 只读观测站点自身流量，落盘结构化的消息 / 深度思考 / 引用；内置查看器支持全文检索 |
+| 导出 | 归档会话导出 Markdown，首行恒为 AI 生成标识块 |
+| 稳定性 | 加载失败/超时切本地错误页（带重试），最大化不再露黑带，迷你窗往返尺寸不漂移 |
+
+## 安装
+
+从 [Releases](https://github.com/zhengjy273/dsk-desktop/releases) 下载：
+
+- `dsk-desktop-setup-x.y.z.exe` —— NSIS 安装版（可选安装目录、建快捷方式、带卸载器）；
+- `dsk-desktop-portable-x.y.z.exe` —— 便携版，不写注册表。
+
+> 安装包**未做代码签名**。从网络下载后若被 SmartScreen 拦截：右键 exe → 属性 → 勾选「解除锁定」，
+> 或 PowerShell `Unblock-File -Path <exe>`。安装版**不要手动移动安装目录**（卸载项与快捷方式写死了路径）。
+
+本地数据在 `%APPDATA%\dsk-desktop\`：
+
+```
+quota\       各账号额度快照与会话用量（<账号>.json / <账号>.sessions.json）
+mirror\      本地归档（mirror\<账号>\）
+logs\app.log 运行日志（「诊断」菜单会往里写选择器探测结果）
+```
+
+托盘菜单「清除本地归档数据…」会同时清掉归档与额度缓存；两者都会在之后的使用中自然重建。
+
+## 从源码运行
+
+需要 Node 24 运行时（Electron 44 自带）与 pnpm。
 
 ```powershell
-# 0) 用 DSH 内置的 pnpm（系统 npm 的 .ps1 被执行策略拦截）
-$pnpm = "<dsh-install>\resources\runtime\pnpm\bin\pnpm.mjs"
-node $pnpm install
+# 依赖（若没有全局 pnpm，可用任意 pnpm 的 mjs 入口；本项目作者用 DSH 内置的那份）
+pnpm install
 
-# 1) 准备"干净 ACL"的 Electron 二进制（必须，原因见下）
+# 把 Electron 二进制复制到「干净 ACL」目录（本机环境必需，原因见下）
 node scripts/setup-electron.mjs
 
-# 2) 自动化可行性检查（约 40 秒，会自动退出）
-node scripts/launch.mjs spike/main.mjs --auto
-
-# 3) 交互模式（窗口内登录，Ctrl+Shift+S 抓快照，Ctrl+Shift+D 抓控件结构，关窗自动写报告）
-node scripts/launch.mjs spike/main.mjs
-
-# 4) 复用"已登录分区"跑自动检查（验证登录态持久化 V4 + 提取选择器素材）
-node scripts/launch.mjs spike/main.mjs --auto --session=main --probe-selectors
-
-# 5) 把 events.ndjson 里的自动判定 + 人工证据汇总成冻结版报告
-node spike/m0-freeze.mjs
-
-# 6) 静态检查与单元测试（M1 的 G1/G2 两个 Gate）
-pnpm typecheck
-pnpm test
-
-# 7) 插件生态侦察（按关键词过滤 4471 个插件的注册表快照）
-node spike/registry-scan.mjs webview tray desktop
-node spike/registry-show.mjs dsh-deepseek-chat
-
-# 8) 日常使用：双击根目录的「启动 DeepSeek Chat.cmd」（日志写到 logs\app.log，出问题发我）
-#    等价命令行（复用已登录数据目录，避免重复登录）：
-$env:DSK_USERDATA="$PWD\.spike-userdata-main"; node scripts\launch.mjs src\main\main.ts
-#
-#    托盘右键菜单（结构已固化为自检断言 trayMenuLabels，改乱会被自检暴露）：
-#      显示 / 隐藏 · 迷你窗 · 置顶窗口 · 查看本地归档… · 导出归档(→ 当前会话/历史会话 → Markdown)
-#      · 清除本地归档数据… · 诊断（写日志）
-#      · 账号：<当前账号> · <额度摘要>(→ 切换 / 添加自定义账号 / 删除指定账号 / 退出登录) · 退出
-#      v1.1.4 起：取消「导出页面快照」，原位由「清除本地归档数据…」接替；导出只剩 Markdown，
-#      标签不再带"（结构化）"（JSON 出口已去掉）。
-#      v1.1.5 起：「清除本地归档数据…」连 `userData/quota/` 的额度缓存一起清。
-#
-#    账号隔离：登录态按 partition（`persist:dsk-<account>`）、本地归档按 `mirror/<account>/`。
-#      切换 / 添加 / 退出登录会**重启应用**（partition 在 app 启动时决定）；删除账号需**两道确认**，
-#      且不允许删除当前账号。账号 id 走路径片段校验（防穿越）。
-#
-#    「查看本地归档…」= 只读查看器（src/shell-ui/archive.html）：
-#      左侧会话列表 + 全文检索（空格分隔=AND，含深度思考内容，命中显示片段）
-#      + 逐条消息详情（顶部固定 AI 生成标识，R3）+ 导出 Markdown（v1.1.4 起只剩这一个出口）。
-#      安全：contextIsolation + sandbox + 仅 4 个白名单 IPC（主进程再校验参数）。
-#
-#    诊断项会做一次只读的选择器探测 + 结构发现，结果写入 logs\app.log 的 [selectors] / [discover] 行。
-#
-# 9) 打包（M3）：NSIS 安装包 + 便携版
-node scripts/package.mjs          # 等价 pnpm dist
-node scripts/package.mjs --dir    # 只解包（快，用于验证）
-#
-#    产物默认输出到 %LOCALAPPDATA%\dsk-desktop-build —— **刻意不放项目目录**：
-#    <workspace> 的 DACL 有问题（孤儿 SID + Low Mandatory Level），产物放里面会让
-#    Chromium 沙箱以 0x80000003 崩溃，且 NSIS 生成安装包那步 exit 2；放 %LOCALAPPDATA% 就正常
-#    （也正与实际安装位置一致）。打包脚本会自动设置镜像并造 pnpm shim。
-#
-#    交付物约定位置（**都放项目根**，用户指定）：
-#      dsk-desktop-分发包.zip             ← 跨设备分发包（安装包 + 便携版 + 分发说明.txt）
-#      dsk-desktop-backup-<时间戳>.zip    ← 源码 + 文档备份
-#    安装包本体仍在 %LOCALAPPDATA%\dsk-desktop-build\（electron-builder 的输出**必须**留在那里）。
-#    ⚠️ 项目目录里的这些 exe **不要在本机直接双击运行**（<workspace> 的 DACL 会让 Chromium 沙箱
-#       以 0x80000003 崩溃）；**复制到别的设备运行完全正常**。
-#
-#    ⚠️ 安装版**不要手动移动安装目录**：NSIS 的「注册表卸载项 / 卸载器 / 快捷方式」三处
-#       都硬编码了安装路径，移动后会表现为「setup 无反应、卸载不掉、快捷方式失效」。
-#       想换位置请二选一：重装时在向导里选目录（静默可用 setup.exe /S /D=<路径>），
-#       或者直接用便携版（不写注册表，放哪都行）。
-#
-#    ⚠️ 安装包**未签名**：跨设备分发（U 盘/网盘/拷贝）后会被 Windows 打上"来自网络"标记，
-#       SmartScreen 或杀软会拦截 —— 表现为"双击没反应 / 一闪而过 / 弹窗"。
-#       在目标设备上：右键 exe → 属性 → 常规页底部勾「解除锁定」→ 确定，再双击
-#       （或 PowerShell：Unblock-File -Path <exe>；SmartScreen 弹窗则点「更多信息 → 仍要运行」）。
-#       彻底免除该提示需要代码签名证书，本项目自用不购买。
-#       跨设备分发可用「分发说明.txt」+ 两个 exe 一起打包（见下文"分发包"）。
+# 启动
+node scripts/launch.mjs src/main/main.ts
 ```
 
-## 两个本机环境坑（都已修复，勿回退）
+日常也可以双击根目录的「启动 DeepSeek Chat.cmd」（日志写 `logs\app.log`）。
 
-### 1. `ELECTRON_RUN_AS_NODE=1`
+### 两个必须知道的启动坑
 
-DSH 会把它注入 shell 环境，导致 Electron 退化为 Node 模式（`electron --version` 会打印 Node 版本、应用拿不到 Electron API）。
-→ `scripts/launch.mjs` 在启动前删除该变量。**任何启动 Electron 的入口都必须走这个启动器，不要直接调 `electron`。**
+1. **`ELECTRON_RUN_AS_NODE=1`**：某些宿主（如 DSH）会注入它，Electron 会退化成 Node 模式
+   （`electron --version` 打印 Node 版本、应用拿不到 Electron API）。`scripts/launch.mjs` 启动前会删除它 ——
+   **任何启动 Electron 的入口都走这个启动器**。
+2. **Chromium 沙箱在污染目录树中崩溃**：若 Electron 二进制位于带 DSH 沙箱 ACL 的目录（孤儿 SID、
+   Low Mandatory Level、缺少 AppContainer 包 ACE），沙箱子进程会以 `STATUS_BREAKPOINT (0x80000003)`
+   崩在应用 JS 加载之前。`scripts/setup-electron.mjs` 把 dist 复制到 `%LOCALAPPDATA%\dsk-electron\dist`，
+   启动器再用官方 `ELECTRON_OVERRIDE_DIST_PATH` 指过去，**沙箱保持启用**，不需要 `--no-sandbox`。
+   应急开关 `DSD_NO_SANDBOX=1`（仅沙箱再次不可用时，且须记录原因）。
 
-### 2. Chromium 沙箱在污染目录树中崩溃
+### TypeScript 直接运行（strip-only）
 
-本机 Electron 默认装在 `<workspace>\...`，而该目录树带有 **DSH 工作区沙箱**留下的：
-
-- 显式孤儿 ACE `S-1-4-85086085-674777630:(OI)(CI)(W,D,DC)`（该 SID 无法解析）
-- `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`
-- 整条路径链**没有任何 AppContainer 包 ACE**（`S-1-15-2-1` / `S-1-15-2-2`）
-
-Chromium 的沙箱子进程在这种 DACL 下会以 `STATUS_BREAKPOINT (0x80000003)` 崩在应用 JS 加载**之前**
-（对应 electron/electron#51761，Windows 11 25H2 可复现；`--disable-gpu` 同样崩）。
-
-→ `scripts/setup-electron.mjs` 把 `dist` 复制到 `%LOCALAPPDATA%\dsk-electron\dist`（ACL 干净），
-`scripts/launch.mjs` 用官方 `ELECTRON_OVERRIDE_DIST_PATH` 指过去，**沙箱保持启用**。
-**不要去改 `<workspace>` 的 ACL** —— 那是 DSH 自身沙箱机制的一部分。
-
-应急开关（仅在沙箱再次不可用时使用，并须记录原因）：`$env:DSD_NO_SANDBOX='1'`。
-
-### 3. `.ts` 由 Electron 直接运行 → strip-only 语法限制
-
-Electron 44 内嵌 Node 24，`electron src/main/main.ts` 可**直接运行、无需构建步骤**（已实测）。
-但它的类型剥离是 **strip-only**：只擦类型，**不支持**以下需要代码转换的语法，运行期会抛
-`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`：
-
-- **构造函数参数属性**（在 constructor 的参数上直接写 `private`/`readonly`）← 本项目踩过两次
-- `enum` / `namespace` / 装饰器
-
-`tsc` 不会报这类错（类型层面合法），只在运行期炸，所以配了一道独立检查：
+Electron 44 内嵌 Node 24，`electron src/main/main.ts` 可直接运行、无需构建。但它的类型剥离是
+**strip-only**：不支持需要代码转换的语法 —— 构造函数参数属性（`constructor(private x)`）、
+`enum`、`namespace`、装饰器。这类写法 `tsc` 不报错，只在运行期抛
+`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`，所以有独立检查：
 
 ```powershell
-node scripts\check-strip-only.mjs   # 有违规时退出码 1
-pnpm check                          # = strip-only 检查 + typecheck + 全部单元测试
+node scripts/check-strip-only.mjs   # 违规时退出码 1
 ```
 
-## M1 进度（当前）
+## 开发
 
-| 任务 | 状态 |
+```powershell
+pnpm typecheck     # tsc --noEmit
+pnpm test          # vitest run（17 个测试文件 / 372 个用例）
+pnpm check         # strip-only + typecheck + 全部单测
+pnpm app:selftest  # 启动自检，JSON 写入 docs/m1-evidence/t1-selftest.json
+pnpm dist          # electron-builder：NSIS + 便携版
+pnpm dist:dir      # 只解包，用于快速验证
+```
+
+打包产物默认输出到 `%LOCALAPPDATA%\dsk-desktop-build`（刻意不放项目目录：若项目位于带 DSH 沙箱 ACL
+的目录，产物会让 Chromium 沙箱崩溃、NSIS 生成也会失败）。打包脚本自动配置国内镜像并创建 pnpm shim。
+
+## 架构
+
+```
+src/
+  main/        主进程：窗口、托盘、快捷键、多账号、注入调度、IPC
+  session/     只读网络镜像（SSE / 请求体）、额度解析、指纹纯函数库（未接线）
+  inject/      注入页面的额度浮层、选择器注册表
+  store/       归档 / 搜索 / 额度持久化（<账号>.json、<账号>.sessions.json）
+  features/    导出（Markdown、AI 标识块）
+  shared/      契约类型、品牌配置、选择器清单
+  shell-ui/    本地页面：错误页、归档查看器、账号输入
+scripts/       启动器、Electron 准备、strip-only 检查、打包
+tests/         vitest 单测
+docs/          合规、已知限制、M0–M2 报告、v1.1.5 审计与功能测试报告
+```
+
+关键实现点：站点数据全部来自「页面自己已经发出的请求」的只读镜像；额度浮层通过模板字符串注入，
+不读取任何表单值；视图边界在 `resize` 之外还监听 `resized` 并对最大化/全屏路径补钉，避免黑带。
+
+## 版本历史
+
+| 版本 | 内容 |
 |---|---|
-| T0 契约层（`src/shared/**`） | ✅ 完成 |
-| T1 外壳（单会话视图 / 托盘 / 快捷键 / 迷你窗 / 主题 / 代理 / 导出） | ✅ 自动自检全绿 → `docs/m1-evidence/t1-selftest.json` |
-| T2 会话与注入（`src/session/**`、`src/inject/**`） | ✅ **网络通道镜像**（SSE / 请求体，只读）+ 选择器注册表（失配降级 / 诊断 / 结构发现）；⚠️ 指纹改写**未接线**（见下方说明） |
-| T3 归档与导出（`src/store/**`、`src/features/**`） | ✅ 完成（覆盖率 store 87% / export 96%） |
-| T4 打包与更新 | ✅ M3：electron-builder 打包（NSIS 安装包 + 便携版）**均已实测运行**；图标经 `win.icon` 生效，**任务栏图标已确认**为自定义图标；自动更新未做 |
-| T5 夹具与回归 | 🚧 mock 站点 ✅、单测 ✅；smoke 与 `.dsh/skills` 待做 |
+| **v1.1.5** | 审计修复 13 项：浮层恢复默认位置跨重载、额度缓存删除、会话用量归属、监听器泄漏、外部跳转拦截、坏 `updatedAt` 自愈、迷你窗尺寸漂移（BUG-4/5/6）、历史响应按会话 id 归属、严格 origin 比较等；新增 v1.1.5 审计与两轮功能测试报告 |
+| v1.1.4 | 托盘菜单瘦身：取消页面快照导出，导出归档只出 Markdown，查看器同步精简 |
+| v1.1.3 | 修复最大化/全屏时页面不跟尺寸、底部露黑带 |
+| v1.1.2 | 移除回答下方次数提示；迷你窗隐藏浮层；token 改为追加；浮层可拖动并跨会话保持；修复展开不贴合、token 恒 0、SPA 切会话 id 不刷新 |
+| v1.1.1 | 修复额度浮层不跟随、展开后错位 |
+| v1.1.0 | 限额可视化：/chat/status 与 /client/settings 只读解析、托盘 tooltip、账号行、输入框浮层、会话 token |
 
-**导出的现状（v1.1.4，诚实说明）**：只剩**一条**导出路径 —— **导出归档**（结构化：逐条消息 + 深度思考 + 引用，
-来自 T2 的网络通道 SSE 观测，产物 AI 生成标识恒为第一块），且**只出 Markdown**。
-M1 时期的**页面快照导出**（AI 标识块 + 页面全文）与 JSON 出口已按用户要求在 v1.1.4 整个取消：
-快照只是页面文本堆叠、不含消息结构，与归档导出重复且容易被误当成结构化产物。
-注意归档来自**运行期流式观测**，历史消息不追溯补档。
+## 已知限制
 
-**指纹改写的现状（v1.1.4，诚实说明）**：`src/session/fingerprint.ts` 是一个**纯函数库**
-（`buildUserAgent` / `buildClientHints` / `applyFingerprintHeaders` / `stripElectronBrand`，
-单测 `tests/unit/fingerprint.test.ts` 覆盖），但**主进程没有接线** ——
-`src/main/main.ts` 的 `setupSession()` 里没有 `session.webRequest.onBeforeSendHeaders`，
-全库也搜不到 `setUserAgent`。因此**运行时 UA 仍是 Electron 默认值**（含 `Electron/44.x`），
-`Sec-CH-UA` 系列头也照 Electron 原样不发。
-M0 时期的 V5a/V5b/V5c 三条 PASS 是在实验脚本 `spike/main.mjs:200` 的 `onBeforeSendHeaders`
-里跑出来的（该脚本仍在，改写逻辑完整），**但那段代码没有搬进 M1 的主进程**。
-按用户决定（2026-11-17）：**保持现状、只改文档**，不在主进程接线。
-若将来需要真正生效，把 `spike/main.mjs` 里那段改写搬进 `setupSession()` 即可，
-并应在 `runUtilSelftest()` 加一条"接线存在"的断言，避免文档与代码再次脱节。
+先看 [docs/KNOWN-LIMITS.md](docs/KNOWN-LIMITS.md)。最常被问到的几条：
 
-**架构要点（M1 最终：无标签页 · 单会话）**：窗口里只显示**一个** `chat.deepseek.com` 页面
-（`src/main/content-view.ts`），内容占满窗口。**不做标签页** —— 站点自带的侧边栏已经承担会话管理，
-应用层再加一层与之**重复**、费内存，而且会引入大量状态。
-配套：**加载失败/超时切本地错误页**（`src/shell-ui/error.html`，带重试按钮，25 秒超时）。
+- 站点不下发「本会话剩余总量」，只显示**已用**；不编造剩余值。
+- 重新生成/修改次数没有权威计数，v1.1.2 起整块不再显示。
+- 只有窗口可见时站点才轮询额度；窗口隐藏期间的数值会滞后，恢复后约 5 分钟内刷新。
+- 归档来自运行期流式观测，**不追溯**补档历史消息。
+- `src/session/fingerprint.ts` 是未接线的纯函数库，运行时 UA 仍为 Electron 默认值（文档已如实标注）。
 
-> 决策留痕：曾短暂实现过"多标签 + 标签栏"，随后按用户决定**整体移除**。原因链：
-> ①每标签一个视图 → 每个都完整加载站点 → 快速连点新建并发请求被**站点限流** → 新标签空白/黑屏；
-> ②改为单视图 + 连点合并仍不够（连点产生连续导航、且标签无实际价值）；
-> ③最终结论：标签功能与侧边栏重复，删除。相关文件（`src/main/tabs.ts`、`tabbar.html`、`preload.cjs`）已删除。
+## 免责与合规
 
-**图标**：源图放 `assets/source/`，然后
-`python scripts/make-icons.py` → 生成 `icon.ico`（多尺寸）/ `icon-256.png` / `tray-32.png`。
-换图只需替换源图后重跑脚本（脚本同时做居中裁方）。
-
-**任务栏图标（开发期限制，留到 M3 解决）**：Windows 的任务栏图标取自 **exe 自身的图标资源**，
-而开发期跑的是 `electron.exe`，`BaseWindow({ icon })` 只管窗口标题栏 —— 所以开发期任务栏显示 Electron 图标。
-
-> ⚠️ **不要试图在开发期 patch exe 图标**（这是踩过的坑）：用 resedit 改写 `electron.exe` 的图标资源后，
-> 进程正常启动、窗口句柄也创建了，但 `win.show()` 之后窗口**始终 `visible=false`**（EnumWindows 确认），
-> 表现为"应用起来了但没有窗口"；换回干净 exe 立即恢复。
-> **M3 待办**：由 electron-builder 的 `icon` 配置正式设置（`assets/icon.ico` 已就绪），并确认安装包与卸载项图标。
-
-## 目录
-
-```
-spike/             M0 可行性验证（main.mjs 主程序、diag.mjs 启动探针、registry-*.mjs 插件侦察）
-scripts/           launch.mjs（统一启动器）、setup-electron.mjs（干净 ACL 的 Electron）
-docs/              PLAN 配套：M0-REPORT.md、compliance.md、m0-evidence/（证据与日志）
-fixtures/          （M1）本地 mock 站点，所有自动化测试都打它，禁止登录真实账号
-src/               （M1）正式实现：shared 契约 / main 外壳 / session 注入 / store 归档
-```
+本项目仅用于个人学习与自用，**不公开分发**，不保证与站点未来的任何版本兼容。
+若站点服务条款或界面变更导致不可用，属于预期之内。账号、登录状态与内容均由你本人直接在官方站点
+产生与持有，本项目不代持、不落盘、不上传。文档目录中的 `compliance.md` 是开发者给自己定的红线清单，
+随代码一起公开仅为了说明实现边界。
