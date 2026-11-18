@@ -13,6 +13,6 @@ contextBridge.exposeInMainWorld('dskArchive', {
   search: (query) => ipcRenderer.invoke('dsk:archive:search', String(query ?? '')),
   /** 读回单个会话的完整镜像 */
   read: (id) => ipcRenderer.invoke('dsk:archive:read', String(id ?? '')),
-  /** 触发导出（主进程弹保存对话框） */
-  exportArchive: (id, format) => ipcRenderer.invoke('dsk:archive:export', String(id ?? ''), String(format ?? 'md')),
+  /** 触发导出（主进程弹保存对话框）。v1.1.4：只支持 Markdown，格式在桥内固定，页面无法指定。 */
+  exportArchive: (id) => ipcRenderer.invoke('dsk:archive:export', String(id ?? ''), 'md'),
 });

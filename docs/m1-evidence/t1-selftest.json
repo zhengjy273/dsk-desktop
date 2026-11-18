@@ -5,8 +5,8 @@
   "partition": "persist:dsk-personal",
   "hotkey": "Control+Shift+D",
   "loadTimeoutMs": 25000,
-  "userData": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5",
-  "logFile": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5\\logs\\app.log",
+  "userData": "C:\\Users\\<user>\\AppData\\Roaming\\dsk-desktop",
+  "logFile": "C:\\Users\\<user>\\AppData\\Roaming\\dsk-desktop\\logs\\app.log",
   "proxyConfig": {
     "mode": "direct",
     "bypass": "<local>"
@@ -18,17 +18,40 @@
   "proxyResolved": "DIRECT",
   "windowCreated": true,
   "windowBounds": {
-    "x": 57,
-    "y": 29,
+    "x": 148,
+    "y": 53,
     "width": 1167,
-    "height": 717
+    "height": 785
+  },
+  "quotaStoreDir": "C:\\Users\\<user>\\AppData\\Roaming\\dsk-desktop\\quota",
+  "quotaView": {
+    "accountId": "personal",
+    "updatedAt": 1794928064708,
+    "modelLabel": "快速模式",
+    "regenerateLimits": "重新生成上限 5 次 · 修改上限 5 次",
+    "regenerateUsed": null,
+    "editUsed": null,
+    "actionCountsEstimated": true,
+    "inputLimit": "单次输入上限 2,621,440 字",
+    "quotaSummary": "额度正常",
+    "isMuted": false,
+    "muteUntil": 0,
+    "muteMsg": null,
+    "serverMessages": [],
+    "exhaustedModels": [],
+    "quotas": [],
+    "sessionTokens": null,
+    "sessionTokensText": null,
+    "fromCache": false
   },
   "trayCreated": true,
   "mirrorStoreReady": true,
-  "mirrorStoreDir": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5\\mirror",
+  "mirrorStoreDir": "C:\\Users\\<user>\\AppData\\Roaming\\dsk-desktop\\mirror",
   "mirrorAttached": true,
-  "hotkeyRegistered": false,
+  "hotkeyRegistered": true,
   "pageUrl": "about:blank",
+  "zoomFactorTarget": 1,
+  "zoomFactor": 1,
   "pageTitle": "about:blank",
   "selectorRegistryVersion": "0.1.0-m0",
   "selectorSummary": "可用 0 / 失配 3 / 未验证降级 6（共 9）",
@@ -114,15 +137,15 @@
       "warn": false
     }
   ],
-  "selectorProbeAt": 1791898046420,
+  "selectorProbeAt": 1794974818775,
   "singleInstanceLock": true,
   "themeSource": "system",
   "prefersDark": true,
   "trayBounds": {
-    "x": 813,
-    "y": 752,
+    "x": 1014,
+    "y": 866,
     "width": 32,
-    "height": 48
+    "height": 49
   },
   "notificationsDisabled": true,
   "contentViewCreated": true,
@@ -138,7 +161,7 @@
     "x": 0,
     "y": 0,
     "width": 1167,
-    "height": 717
+    "height": 785
   },
   "pageUrlNow": "about:blank",
   "miniApiAvailable": {
@@ -158,6 +181,12 @@
   },
   "miniStateMachineHooked": true,
   "alwaysOnTopBeforeMini": false,
+  "miniRoundTripOuterBefore": {
+    "x": 141,
+    "y": 23,
+    "width": 1181,
+    "height": 823
+  },
   "alwaysOnTopApplied": false,
   "mini": false,
   "miniSteps": [
@@ -166,23 +195,37 @@
     "restoreBounds"
   ],
   "miniBounds": {
-    "x": 85,
-    "y": 145,
-    "width": 1115,
-    "height": 577
+    "x": 148,
+    "y": 53,
+    "width": 1167,
+    "height": 785
   },
   "miniEnterForcesTop": true,
   "miniEnterDisablesResize": true,
+  "miniRoundTripOuterAfter": {
+    "x": 141,
+    "y": 23,
+    "width": 1181,
+    "height": 823
+  },
+  "miniRoundTrip2OuterAfter": {
+    "x": 141,
+    "y": 23,
+    "width": 1181,
+    "height": 823
+  },
+  "miniRoundTripBoundsStable": true,
+  "miniRoundTrip2BoundsStable": true,
   "miniExitRestoresResize": true,
-  "miniExitRestoresTopPolicy": false,
+  "miniExitAlwaysOnTopEqualsBefore": true,
   "miniExitRestoresTaskbar": true,
   "miniEnterHidesTaskbar": true,
   "minimized": false,
   "minimizedBeforeMini": true,
   "restoreCount": 2,
   "miniFromMinimizedBounds": {
-    "x": 821,
-    "y": 225,
+    "x": 925,
+    "y": 332,
     "width": 367,
     "height": 485
   },
@@ -195,10 +238,10 @@
   ],
   "miniFromMinimizedSane": true,
   "miniExitFromMinimizedBounds": {
-    "x": 71,
-    "y": 87,
-    "width": 1141,
-    "height": 647
+    "x": 148,
+    "y": 53,
+    "width": 1167,
+    "height": 785
   },
   "miniExitFromMinimizedSane": true,
   "menuTopDisabledWhileMini": true,
@@ -207,9 +250,9 @@
   "menuTopEnabledWhenNormal": true,
   "menuTopLabelWhenNormal": "置顶窗口",
   "exportMarkdownHasAiNotice": true,
-  "exportJsonHasAiNotice": true,
+  "exportMarkdownContainsNotice": true,
   "exportMarkdownFirstBlockIsNotice": true,
-  "exportJsonParsesWithFlag": true,
+  "exportMarkdownFilename": "自检会话-self-test-20261010-1006.md",
   "proxyPacHttpRejected": true,
   "proxyManualNeedsRules": true,
   "proxyDirectValid": true,
@@ -236,38 +279,55 @@
     "---",
     "查看本地归档…",
     "导出归档",
-    "导出页面快照",
+    "清除本地归档数据…",
     "---",
     "诊断（写日志）",
     "---",
-    "清除本地归档数据…",
-    "---",
-    "账号：personal",
+    "账号：personal · 额度正常",
     "---",
     "退出"
   ],
+  "snapshotItemRemoved": true,
   "archiveSubmenuLabels": [
-    "当前会话 → Markdown（结构化）",
-    "当前会话 → JSON（结构化）"
+    "当前会话",
+    "",
+    "<会话标题> - DeepSeek（5 条）",
+    "DeepSeek免费端限额新政 - Deep…（2 条）",
+    "凑微分法原理讲解 - DeepSeek（2 条）",
+    "C++随机数生成 - DeepSeek（2 条）",
+    "C++实现split函数 - DeepSee…（2 条）",
+    "C++退格详解 - DeepSeek（2 条）"
   ],
-  "snapshotSubmenuLabels": [
-    "Markdown",
-    "JSON"
-  ],
+  "archiveSubmenuHasJson": false,
+  "archiveSubmenuHasStructuredSuffix": false,
+  "archiveSubmenuCurrentIsSubmenu": true,
+  "archiveSubmenuHistoryAllMdOnly": true,
   "diagnosisIsPlainItem": true,
-  "accountMenuLabel": "账号：personal",
-  "accountMenuItemCount": 7,
+  "clearArchiveFollowsExport": true,
+  "accountMenuLabel": "账号：personal · 额度正常",
+  "accountMenuItemCount": 6,
   "accountMenuHasSignOut": true,
   "accountMenuHasAdd": true,
   "accountMenuHasDelete": true,
-  "accountMenuDeleteTargets": [
-    "work"
-  ],
+  "accountMenuDeleteTargets": [],
   "accountMenuOrderOk": true,
   "currentAccount": "personal",
-  "accountFile": "C:\\Users\\<user>\\AppData\\Local\\Temp\\dsk-selftest-bugfix5\\account.json",
+  "accountFile": "C:\\Users\\<user>\\AppData\\Roaming\\dsk-desktop\\account.json",
   "logFileConfigured": true,
   "logFileExists": true,
+  "quotaStoreReady": true,
+  "quotaViewPresent": true,
+  "quotaViewSummary": "额度正常",
+  "quotaTooltipLineCount": 4,
+  "quotaAccountSuffixes": [
+    "● personal（当前） · 额度正常"
+  ],
+  "quotaInjectScriptChars": 17766,
+  "quotaResetScriptChars": 1024,
+  "quotaInjectScriptClean": true,
+  "quotaInjectScriptCleanReset": true,
+  "quotaInjectNoBadge": true,
+  "quotaInjectHiddenSupported": true,
   "maximizedBeforeMini": true,
   "minimizedAfterMaximize": true,
   "miniFromMaxMinSteps": [
@@ -281,23 +341,27 @@
   "miniFromMaxMinHasRestore": true,
   "miniFromMaxMinHasUnmaximize": true,
   "miniFromMaxMinBoundsImmediate": {
-    "x": 78,
-    "y": 116,
-    "width": 1128,
-    "height": 612
+    "x": 148,
+    "y": 53,
+    "width": 1167,
+    "height": 785
   },
   "miniFromMaxMinBoundsSettled": {
-    "x": 816,
-    "y": 242,
+    "x": 925,
+    "y": 332,
     "width": 367,
-    "height": 485
+    "height": 484
   },
   "miniFromMaxMinSaneSettled": true,
+  "miniZoomFactor": 0.8,
+  "miniZoomApplied": true,
   "miniExitFromMaxMinBoundsSettled": {
-    "x": 85,
-    "y": 145,
-    "width": 1115,
-    "height": 577
+    "x": 148,
+    "y": 53,
+    "width": 1167,
+    "height": 785
   },
-  "miniExitFromMaxMinSaneSettled": true
+  "miniExitFromMaxMinSaneSettled": true,
+  "zoomAfterMiniExit": 1,
+  "zoomRestored": true
 }

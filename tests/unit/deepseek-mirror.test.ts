@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractConversationId,
+  extractModelTypeFromRequest,
   extractSessionIdFromRequest,
   extractUserTextFromRequest,
   pickLastMessageText,
@@ -217,5 +218,29 @@ describe('会话 id：从请求体提取（比 URL 更早可用）', () => {
     expect(extractSessionIdFromRequest(JSON.stringify({ other: 1 }))).toBeNull();
     expect(extractSessionIdFromRequest(JSON.stringify({ chat_session_id: '../../evil' }))).toBeNull();
     expect(extractSessionIdFromRequest(JSON.stringify({ chat_session_id: '-bad' }))).toBeNull();
+  });
+});
+
+describe('模型标识：从请求体提取（限额上限按模型下发）', () => {
+  it('实测字段 model_type', () => {
+    const body = JSON.stringify({ chat_session_id: 'abc', model_type: 'deep_think', prompt: 'hi' });
+    expect(extractModelTypeFromRequest(body)).toBe('deep_think');
+  });
+
+  it('兼容 modelType / model / chat_model', () => {
+    expect(extractModelTypeFromRequest(JSON.stringify({ modelType: 'x' }))).toBe('x');
+    expect(extractModelTypeFromRequest(JSON.stringify({ model: 'y' }))).toBe('y');
+    expect(extractModelTypeFromRequest(JSON.stringify({ chat_model: 'z' }))).toBe('z');
+  });
+
+  it('拿不到 → null（调用方保留旧值，不猜）', () => {
+    expect(extractModelTypeFromRequest('not json')).toBeNull();
+    expect(extractModelTypeFromRequest('')).toBeNull();
+    expect(extractModelTypeFromRequest(JSON.stringify({ prompt: 'hi' }))).toBeNull();
+  });
+
+  it('过长或空字符串 → null（避免把 prompt 文本误当模型名）', () => {
+    expect(extractModelTypeFromRequest(JSON.stringify({ model_type: 'a'.repeat(65) }))).toBeNull();
+    expect(extractModelTypeFromRequest(JSON.stringify({ model_type: '   ' }))).toBeNull();
   });
 });

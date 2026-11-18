@@ -235,6 +235,17 @@ export interface DeepSeekTurn {
   counts: Record<DeepSeekFrameKind, number>;
   /** JSON 解析失败的帧数（真正的异常帧；解析成功但无内容的空帧不计入） */
   skipped: number;
+  /**
+   * 本轮结束时**本会话的累计已用 token 数**（站点字段 `accumulated_token_usage`）。
+   *
+   * 语义（前端 bundle 确认）：它是**累计值**而非本轮增量 ——
+   * 前端 `grabParentTokenCount()` 直接拿父消息的该字段当子消息的基数，
+   * `useBranchUsedTokenCount()` 也直接读当前消息的该字段。因此**不需要自己累加**。
+   *
+   * 站点**没有**下发"单会话总量/剩余量"，所以只能如实显示已用量，不推断上限。
+   * 未观测到时为 null（不显示，也不显示 0 —— 0 会被误读成"完全没用"）。
+   */
+  accumulatedTokens: number | null;
 }
 
 /** `fragments[].type` 中被视为"思考"的取值（样本观测到 THINK） */
@@ -309,6 +320,53 @@ export function readFragments(
 }
 
 /**
+ * 递归收集 `accumulated_token_usage`（站点字段）。
+ *
+ * 为什么递归：该字段在不同帧里位置不同 —— 快照帧在
+ * `{"v":{"response":{"accumulated_token_usage":N}}}`，历史接口在 `e.accumulated_token_usage`。
+ * 取**最大值**：它是单调递增的累计值，最大值即本轮结束时的准确用量
+ *（中途帧可能带旧值或 0，取最大可避免被早期帧拉低）。
+ *
+ * **补丁帧（关键，曾经读漏）**：流结束时站点发的不是快照，而是路径补丁：
+ * `{"p":"response","o":"BATCH","v":[{"p":"accumulated_token_usage","v":110}]}`
+ * 这里的 `p` 是"被修改的字段路径"，`v` 才是值。早期实现只认 `key === 'accumulated_token_usage'`，
+ * 于是只读到快照帧里流式过程中的 `0`，终值 110 被完全忽略 —— 表现为"token 计数永远是 0"。
+ * 所以必须同时识别 `{p, v}` 形式：**`p` 命中字段名且同级 `v` 是数字**。
+ */
+export function collectAccumulatedTokens(value: unknown, depth = 0): number | null {
+  if (depth > 10 || value === null || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    let best: number | null = null;
+    for (const item of value) {
+      const n = collectAccumulatedTokens(item, depth + 1);
+      if (n !== null && (best === null || n > best)) best = n;
+    }
+    return best;
+  }
+  const rec = value as Record<string, unknown>;
+  let best: number | null = null;
+  // 补丁帧：{"p":"accumulated_token_usage","v":110}
+  if (isTokenFieldName(rec.p) && typeof rec.v === 'number') {
+    const n = rec.v;
+    if (Number.isFinite(n) && n >= 0) best = n;
+  }
+  for (const [key, v] of Object.entries(rec)) {
+    if (isTokenFieldName(key) && typeof v === 'number') {
+      if (Number.isFinite(v) && v >= 0 && (best === null || v > best)) best = v;
+      continue;
+    }
+    const n = collectAccumulatedTokens(v, depth + 1);
+    if (n !== null && (best === null || n > best)) best = n;
+  }
+  return best;
+}
+
+/** 是否为"累计 token 用量"的字段名（快照键名 / 补丁帧路径名）。 */
+function isTokenFieldName(name: unknown): boolean {
+  return name === 'accumulated_token_usage' || name === 'accumulatedTokenUsage';
+}
+
+/**
  * 站点校准解析：把一段 DeepSeek SSE 文本解成一轮回答。
  *
  * **阶段归属**：先用快照帧里的 `fragments[].type` 判断当前处于"思考"还是"正文"阶段，
@@ -337,6 +395,7 @@ export function parseDeepSeekSse(raw: string): DeepSeekTurn {
   // 快照里给出的**累积完整内容**（实测 resume_stream 会在快照里直接给出完整正文与思考）
   let snapshotText = '';
   let snapshotThinking = '';
+  let accumulatedTokens: number | null = null;
 
   for (const frame of frames) {
     const event = (frame.event ?? '').toLowerCase();
@@ -383,6 +442,12 @@ export function parseDeepSeekSse(raw: string): DeepSeekTurn {
     }
 
     collectCitations(parsed, citations);
+
+    // 累计 token 用量：只读观测到的字段，取本轮所有帧里的最大值（见 collectAccumulatedTokens 注释）
+    const tokens = collectAccumulatedTokens(parsed);
+    if (tokens !== null && (accumulatedTokens === null || tokens > accumulatedTokens)) {
+      accumulatedTokens = tokens;
+    }
 
     const v = (parsed as { v?: unknown }).v;
     const op = typeof (parsed as { o?: unknown }).o === 'string' ? String((parsed as { o?: unknown }).o) : null;
@@ -443,6 +508,7 @@ export function parseDeepSeekSse(raw: string): DeepSeekTurn {
     done,
     counts,
     skipped,
+    accumulatedTokens,
   };
 }
 

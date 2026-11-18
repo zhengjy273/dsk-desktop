@@ -18,3 +18,19 @@ export const SITE_ORIGIN = 'https://chat.deepseek.com';
 
 /** 会话分区前缀：每个身份一个，天然隔离登录态（DD-02）。 */
 export const PARTITION_PREFIX = 'persist:dsk-';
+
+/**
+ * 判断 URL 是否落在站点 origin 内（**严格 origin 比较**）。
+ *
+ * 为什么不能 `startsWith(SITE_ORIGIN)`：`https://chat.deepseek.com.evil.com` 这类域名
+ * 与站点前缀相同、origin 不同，前缀判断会把它放行 —— 既可能把外站页面加载进壳里，
+ * 也可能让注入层把账号额度写进外站页面。`new URL().origin` 是规范化的来源标识，
+ * 相等即同源。解析失败（空串、相对路径、非法 URL）一律返回 false。
+ */
+export function isSameSiteUrl(raw: string, siteOrigin: string = SITE_ORIGIN): boolean {
+  try {
+    return new URL(raw).origin === new URL(siteOrigin).origin;
+  } catch {
+    return false;
+  }
+}

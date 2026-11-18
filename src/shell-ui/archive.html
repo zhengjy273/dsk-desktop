@@ -177,11 +177,8 @@
     const actions = el('div', 'actions');
     const md = el('button', '', '导出 Markdown');
     md.type = 'button';
-    md.addEventListener('click', () => void api.exportArchive(conv.id, 'md'));
-    const js = el('button', '', '导出 JSON');
-    js.type = 'button';
-    js.addEventListener('click', () => void api.exportArchive(conv.id, 'json'));
-    actions.appendChild(md); actions.appendChild(js);
+    md.addEventListener('click', () => void api.exportArchive(conv.id));
+    actions.appendChild(md);
     $detail.appendChild(actions);
 
     if (conv.messages.length === 0) {

@@ -13,6 +13,7 @@
 import { BaseWindow, WebContentsView } from 'electron';
 import { pathToFileURL } from 'node:url';
 import type { Rectangle } from 'electron';
+import { isSameSiteUrl } from '../shared/brand.ts';
 
 export interface ContentViewDeps {
   win: BaseWindow;
@@ -27,6 +28,15 @@ export interface ContentViewDeps {
   onLoadFailed?: (info: { code: number; desc: string; url: string; timedOut?: boolean }) => void;
   onTitle?: (title: string) => void;
   onNavigated?: (url: string) => void;
+  /**
+   * 页面 console 消息（只读旁听）。
+   *
+   * 用途：注入层没有 preload 通道（contextIsolation + sandbox），某些"页面 → 主进程"
+   * 的单向通知只能走 console。目前只有一个消费者：浮层「恢复默认位置」时把主进程
+   * 记住的坐标清掉（否则页面重载会把旧坐标灌回来）。
+   * **只读**：不拦截、不改写页面输出。
+   */
+  onConsoleMessage?: (info: { text: string }) => void;
 }
 
 export class ContentView {
@@ -81,9 +91,73 @@ export class ContentView {
     const wc = view.webContents;
 
     // 跨源一律外跳系统浏览器，应用内不开新窗口（DD-13 / V14）
+    // 用严格 origin 比较：`startsWith` 会把 `https://chat.deepseek.com.evil.com` 当成站内。
     wc.setWindowOpenHandler(({ url }) => {
-      if (!url.startsWith(this.deps.siteOrigin)) this.deps.onExternal?.(url);
+      if (!isSameSiteUrl(url, this.deps.siteOrigin)) this.deps.onExternal?.(url);
       return { action: 'deny' };
+    });
+
+    /*
+     * 主框架级的站外跳转也要挡住。
+     *
+     * `setWindowOpenHandler` 只覆盖 `window.open` / `target=_blank`；而 `location.href = ...`
+     * 或站点被劫持后跳外站，走的是**主框架导航** —— 不拦的话外站页面会直接加载进这个壳里，
+     * 窗口标题还是 "DeepSeek Chat"，用户看不出已经离开站点。
+     * `will-redirect` 同理：站点自身的 3xx 跳转也要过一遍同样的判断。
+     */
+    // `file:` 只放行本地错误页本身：错误页里的「重试」跳回站点由上面的同源判断放行。
+    // 之前放行任意 `file:` 等价于允许页面把本地任意文件加载进壳里（N16）。
+    const errorPageUrl = this.deps.errorPagePath
+      ? pathToFileURL(this.deps.errorPagePath).href
+      : null;
+    const isErrorPageUrl = (u: string): boolean =>
+      // showErrorPage 生成的 URL 一定带 `?code=&desc=&retry=`，严格相等会让这个闸门对真实错误页
+      // 恒失效（N31）：错误页自身若再导航/重试回错误页，会被当成"站外跳转"再弹一次浏览器。
+      errorPageUrl !== null && (u === errorPageUrl || u.startsWith(`${errorPageUrl}?`));
+    const blockOffsite = (e: Electron.Event, url: string) => {
+      const u = String(url);
+      if (isSameSiteUrl(u, this.deps.siteOrigin) || isErrorPageUrl(u) || u === 'about:blank') return;
+      e.preventDefault();
+      this.deps.onExternal?.(u);
+    };
+    /**
+     * `will-navigate` / `will-redirect` 共用的站外拦截。
+     *
+     * 两种回调签名并存：
+     * - 旧版位置参数：`(event, url, isInPlace, isMainFrame, …)`；
+     * - 新版单个 `details` 参数：**它本身就是事件对象**（`Event<Params>` 把 preventDefault 与
+     *   url/isMainFrame 合并在一起）。
+     * 所以先看第一个参数是否自带 `url`，没有再退回位置参数（N35）—— 原先只查第二个参数，
+     * 新版分支永不命中；一旦上游移除旧参数，args[1] 变 undefined，所有主框架跳转会被按空 URL
+     * 拦掉（比 N26 更严重）。
+     */
+    const blockNavigation = (...args: unknown[]): void => {
+      const first = args[0];
+      const details =
+        typeof first === 'object' && first !== null && 'url' in (first as object)
+          ? (first as { url?: unknown; isMainFrame?: unknown })
+          : null;
+      const target = details ? String(details.url ?? '') : String(args[1] ?? '');
+      const isMainFrame = details ? details.isMainFrame !== false : args[3] !== false;
+      if (!isMainFrame) return;
+      blockOffsite((details ?? first) as unknown as Electron.Event, target);
+    };
+    wc.on('will-navigate', blockNavigation);
+    // `will-redirect` 会为 iframe 的 3xx 也触发；只拦主框架，避免子框架跳转也弹系统浏览器（N26）。
+    wc.on('will-redirect', blockNavigation);
+
+    // 页面 console 只读旁听（注入层的"恢复默认位置"通知走这里）
+    // Electron 新版回调签名是 (details)：{ message, level, lineNumber, sourceId }；
+    // 旧版是 (event, level, message, line, sourceId)。两种都兼容一下，避免升级后静默失效。
+    wc.on('console-message', (...args: unknown[]) => {
+      const first = args[0] as { message?: unknown } | undefined;
+      const text =
+        first && typeof first.message === 'string'
+          ? first.message
+          : typeof args[2] === 'string'
+            ? args[2]
+            : '';
+      if (text) this.deps.onConsoleMessage?.({ text });
     });
 
     wc.on('page-title-updated', () => this.deps.onTitle?.(wc.getTitle()));
@@ -101,6 +175,18 @@ export class ContentView {
       this.deps.onTitle?.(wc.getTitle());
     });
     wc.on('did-navigate', (_e, url) => {
+      if (!String(url).startsWith('file:')) {
+        this.lastRequestedUrl = String(url);
+        this.deps.onNavigated?.(String(url));
+      }
+    });
+    /**
+     * 站点是 SPA：点侧栏切会话走的是 `history.pushState`，**不触发 `did-navigate`**，
+     * 只会触发 `did-navigate-in-page`。漏掉它会导致会话 id 永远停在上一次加载的地址：
+     * 按会话的 token 缓存取不到、拖动的浮层位置也不会按会话重算（用户实测"切会话后用量不对"）。
+     */
+    wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+      if (!isMainFrame) return;
       if (!String(url).startsWith('file:')) {
         this.lastRequestedUrl = String(url);
         this.deps.onNavigated?.(String(url));
@@ -141,25 +227,68 @@ export class ContentView {
     this.load(this.currentSiteUrl());
   }
 
-  /** 窗口尺寸变化时必须调用：WebContentsView 的 bounds 不会自动布局。 */
-  syncBounds(): void {
-    if (!this.view || !this.deps.win) return;
+  /**
+   * 窗口尺寸变化时必须调用：WebContentsView 的 bounds 不会自动布局。
+   *
+   * 返回是否真的改动了视图尺寸 —— 调用方据此判断"这次同步是不是白跑"。
+   */
+  syncBounds(): boolean {
+    if (!this.view || !this.deps.win) return false;
     // 最小化期间**不要**动视图尺寸：Windows 会把最小化窗口的 bounds 报告成异常值
     //（例如坐标 -32000 或 0 尺寸），用它 setBounds 会把视图压成 1×1/异常位置，
     // 恢复后表现为"黑屏"（用户实测：迷你窗+置顶时点任务栏图标）。
     // 恢复时由 main.ts 的 `restore` 事件重新调用本方法。
-    if (this.deps.win.isMinimized()) return;
+    if (this.deps.win.isMinimized()) return false;
     const b = this.deps.win.getContentBounds();
+    const next = {
+      x: 0,
+      y: 0,
+      width: Math.max(b.width, 1),
+      height: Math.max(b.height, 1),
+    };
+    let prev: Rectangle | null = null;
     try {
-      this.view.setBounds({
-        x: 0,
-        y: 0,
-        width: Math.max(b.width, 1),
-        height: Math.max(b.height, 1),
-      } as Rectangle);
+      prev = this.view.getBounds();
+    } catch {
+      prev = null;
+    }
+    let changed = false;
+    try {
+      const same =
+        prev !== null &&
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.width === next.width &&
+        prev.height === next.height;
+      if (!same) {
+        this.view.setBounds(next as Rectangle);
+        changed = true;
+      }
     } catch {
       /* 窗口销毁中 */
     }
+    // 全屏/最大化"页面没同步缩放、底部露黑带"的排查开关（用户实测过）。
+    // 只在需要时打开，正常使用不产生噪音日志。
+    if (process.env.DSK_VIEW_DEBUG === '1') {
+      let parentBounds = 'n/a';
+      try {
+        const pb = this.deps.win.contentView.getBounds();
+        parentBounds = `${pb.width}x${pb.height}`;
+      } catch {
+        parentBounds = 'err';
+      }
+      console.log(
+        `[view-debug] syncBounds changed=${changed}` +
+          ` win=${JSON.stringify(b)}` +
+          ` parent=${parentBounds}` +
+          ` prev=${prev === null ? 'null' : `${prev.width}x${prev.height}`}` +
+          ` next=${next.width}x${next.height}` +
+          ` zoom=${String(safeZoom(this.view))}` +
+          ` max=${String(this.deps.win.isMaximized())}` +
+          ` fs=${String(this.deps.win.isFullScreen())}`,
+      );
+    }
+    return changed;
   }
 
   destroy(): void {
@@ -219,5 +348,14 @@ export class ContentView {
     void view.webContents.loadURL(`${base}${q}`).catch(() => {
       /* 本地页不应失败 */
     });
+  }
+}
+
+/** 读页面缩放比例（仅诊断日志用，读不到返回 null）。 */
+function safeZoom(view: WebContentsView): number | null {
+  try {
+    return view.webContents.getZoomFactor();
+  } catch {
+    return null;
   }
 }

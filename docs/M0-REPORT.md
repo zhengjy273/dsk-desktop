@@ -29,6 +29,16 @@
 
 补充自动证据：
 
+> ⚠️ **2026-11-17 事后更正（重要）**：下面 V5a/V5b/V5c 三条 PASS 与"改写后 UA"证据，
+> 是在**实验脚本** `spike/main.mjs:200` 的 `session.webRequest.onBeforeSendHeaders` 里取得的，
+> 该脚本至今仍在且改写逻辑完整。但这段改写**没有搬进 M1 的主进程**：
+> `src/main/main.ts` 的 `setupSession()` 里没有 `onBeforeSendHeaders`，全库也搜不到 `setUserAgent`，
+> `src/session/fingerprint.ts` 只有纯函数与单测、无调用方。
+> 因此**当前产品运行时 UA 仍是 Electron 默认值**（含 `Electron/44.x`），`Sec-CH-UA` 系列头照旧不发。
+> 本报告保留原始记录以留痕，但 V5a/V5b/V5c 描述的是**实验期能力**，不是产品现状。
+> 按用户决定（2026-11-17）：保持现状、只改文档，不在主进程接线。
+> 详见 `README.md`「指纹改写的现状」与 `docs/KNOWN-LIMITS.md` 同名条目。
+
 - 指纹改写后 UA：`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.130 Safari/537.36`
 - 客户端提示（**补发**，因 Electron 44 默认对主框架导航不发这组头）：`"Chromium";v="152", "Not?A_Brand";v="24"`
   - 改写前实测值：`null`；原始头名列表：`Upgrade-Insecure-Requests,User-Agent,Accept,Sec-Fetch-Site,Sec-Fetch-Mode,Sec-Fetch-User,Sec-Fetch-Dest,Accept-Encoding,Accept-Lan`

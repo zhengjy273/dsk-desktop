@@ -16,7 +16,7 @@
   `text/event-stream`（或 URL 含 `/chat/completion`）的请求 → 在 `loadingFinished` 时用
   `Network.getResponseBody` 取完整响应体。
 - **不使用** `Fetch.enable`（那会拦截并改变页面行为）；不构造请求、不改请求头、不重放。
-- 样本落盘 `docs/m2-evidence/sse-samples/`；`DSK_CAPTURE_SSE=0` 关闭。
+- 样本落盘 `docs/m2-evidence/sse-samples/`；`DSK_CAPTURE_SSE=0` 关闭。（v1.1.5 起改为 `DSK_CAPTURE_SSE=1` 显式开启，默认不落盘 —— 见 KNOWN-LIMITS）
 - 自检断言：`mirrorAttached=true`、`mirrorStats={captured,failures,lastError,attached}`。
 
 **2026-10-10 实际抓到 2 份样本**（用户手动发起，非脚本自动化）：

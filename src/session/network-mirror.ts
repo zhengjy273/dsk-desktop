@@ -19,10 +19,25 @@ import type { WebContents } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+/** SSE 通道默认关键字（流式回答 = 归档来源） */
+const DEFAULT_SSE_KEYWORDS = ['/chat/completion', '/chat/regenerate', '/chat/edit_message'];
+
+/**
+ * JSON 通道默认关键字（限额/禁言/模型上限/会话累计 token）。
+ *
+ * 全部是**页面自己本来就会发**的请求：
+ *  - `/chat/status`：额度与禁言状态（前端每 5 分钟轮询一次）；
+ *  - `/client/settings`：`model_configs`（重新生成/修改次数上限、单次输入上限）；
+ *  - `/chat/history_messages`：历史消息（含 `accumulated_token_usage`，切会话时补已用量）。
+ */
+const DEFAULT_JSON_KEYWORDS = ['/chat/status', '/client/settings', '/chat/history_messages'];
+
 interface SseRequest {
   url: string;
   contentType: string;
   startedAt: number;
+  /** 通道类型：SSE 流式归档 vs JSON 状态快照（限额数据） */
+  kind: 'sse' | 'json';
 }
 
 export interface NetworkMirrorOptions {
@@ -37,6 +52,19 @@ export interface NetworkMirrorOptions {
   /** 只匹配这些关键字的响应（默认 event-stream 或 URL 含 chat/completion） */
   urlKeywords?: string[];
   onSse?: (info: { url: string; contentType: string; body: string; chars: number }) => void;
+  /**
+   * 捕获到**非 SSE 的 JSON 响应**时回调（限额数据用）。
+   *
+   * 与 `onSse` 分开的原因：SSE 是流式归档通道，JSON 是状态通道，两者消费方不同；
+   * 混在一个回调里会让归档逻辑被迫区分两种载荷。
+   */
+  onJson?: (info: { url: string; contentType: string; body: string; chars: number }) => void;
+  /**
+   * JSON 响应的 URL 关键字（默认 `['/chat/status', '/client/settings', '/chat/history_messages']`）。
+   *
+   * 只观测这几条**页面自己本来就会发**的请求 —— 不新增请求、不重放（R2）。
+   */
+  jsonUrlKeywords?: string[];
   logger?: (message: string) => void;
 }
 
@@ -120,10 +148,22 @@ export class NetworkMirror {
     this.opts.logger?.(message);
   }
 
-  private shouldCapture(url: string, contentType: string): boolean {
-    const keywords = this.opts.urlKeywords ?? ['/chat/completion'];
-    if (contentType.includes('text/event-stream')) return true;
-    return keywords.some((k) => url.includes(k));
+  /**
+   * 判定这条响应属于哪条通道：
+   *  - `sse`：流式回答（归档用）；
+   *  - `json`：状态快照（限额/禁言/模型上限，展示用）；
+   *  - `null`：不关心。
+   *
+   * 顺序很重要：先判 event-stream，再判 SSE 关键字，最后才判 JSON 关键字 ——
+   * 否则带 JSON 关键字的流式响应会被误当快照。
+   */
+  private classify(url: string, contentType: string): 'sse' | 'json' | null {
+    if (contentType.includes('text/event-stream')) return 'sse';
+    const sseKeywords = this.opts.urlKeywords ?? DEFAULT_SSE_KEYWORDS;
+    if (sseKeywords.some((k) => url.includes(k))) return 'sse';
+    const jsonKeywords = this.opts.jsonUrlKeywords ?? DEFAULT_JSON_KEYWORDS;
+    if (jsonKeywords.some((k) => url.includes(k))) return 'json';
+    return null;
   }
 
   private async onMessage(method: string, params: Record<string, unknown>): Promise<void> {
@@ -143,9 +183,11 @@ export class NetworkMirror {
       const contentType = String(
         headers['content-type'] ?? headers['Content-Type'] ?? response.mimeType ?? '',
       );
-      if (!requestId || !this.shouldCapture(url, contentType)) return;
-      this.pending.set(requestId, { url, contentType, startedAt: Date.now() });
-      this.log(`SSE 开始 → ${url}（${contentType}）`);
+      if (!requestId) return;
+      const kind = this.classify(url, contentType);
+      if (kind === null) return;
+      this.pending.set(requestId, { url, contentType, startedAt: Date.now(), kind });
+      this.log(`${kind === 'sse' ? 'SSE' : 'JSON'} 开始 → ${url}（${contentType}）`);
       return;
     }
 
@@ -165,7 +207,7 @@ export class NetworkMirror {
       this.pending.delete(requestId);
       this.failures += 1;
       this.lastError = `loadingFailed：${String(params.errorText ?? 'unknown')}`;
-      this.log(`SSE 失败 → ${hit.url}：${this.lastError}`);
+      this.log(`${hit.kind === 'sse' ? 'SSE' : 'JSON'} 失败 → ${hit.url}：${this.lastError}`);
     }
   }
 
@@ -184,7 +226,13 @@ export class NetworkMirror {
       postDataEntries?: { bytes?: string }[];
     };
     const url = String(request.url ?? '');
-    if (!this.shouldCapture(url, '')) return;
+    // 只关心 SSE 通道的请求体（用户自己说的话在里面）；JSON 通道都是 GET，没有请求体可言
+    if (this.classify(url, '') !== 'sse') return;
+
+    // 修改/重新生成这两条请求可能没有请求体（实测可以只有 URL + 会话 cookie）。
+    // 它们的价值在"发生过一次"本身（用户点了按钮），所以即使没有 body 也要上报，
+    // 否则已用次数会漏记 —— 这是 m00918「改了一次次数不变」的根因之一。
+    const actionUrl = url.includes('/chat/regenerate') || url.includes('/chat/edit_message');
 
     let postData = typeof request.postData === 'string' ? request.postData : '';
     if (postData === '' && Array.isArray(request.postDataEntries)) {
@@ -197,7 +245,10 @@ export class NetworkMirror {
         }
       }
     }
-    if (postData === '') return;
+    if (postData === '') {
+      if (actionUrl) this.opts.onRequest?.({ url, method: String(request.method ?? ''), postData: '' });
+      return;
+    }
 
     this.requestCount += 1;
     this.log(`请求体捕获 → ${url}（${postData.length} 字符，method=${String(request.method ?? '')}）`);
@@ -232,13 +283,21 @@ export class NetworkMirror {
       const text = res?.base64Encoded ? Buffer.from(raw, 'base64').toString('utf8') : raw;
       const chars = text.length;
       this.captured += 1;
-      this.log(`SSE 完成 → ${hit.url}：${chars} 字符，用时 ${Date.now() - hit.startedAt}ms`);
+      const label = hit.kind === 'sse' ? 'SSE' : 'JSON';
+      this.log(`${label} 完成 → ${hit.url}：${chars} 字符，用时 ${Date.now() - hit.startedAt}ms`);
+
+      if (hit.kind === 'json') {
+        // JSON 通道只回回调，**不落盘**（限额数据不需要样本；也避免把账号状态写到工作区）
+        this.opts.onJson?.({ url: hit.url, contentType: hit.contentType, body: text, chars });
+        return;
+      }
+
       this.dumpSample(hit, text);
       this.opts.onSse?.({ url: hit.url, contentType: hit.contentType, body: text, chars });
     } catch (e) {
       this.failures += 1;
       this.lastError = `getResponseBody 失败：${String((e as Error)?.message ?? e)}`;
-      this.log(`SSE 取体失败 → ${hit.url}：${this.lastError}`);
+      this.log(`${hit.kind === 'sse' ? 'SSE' : 'JSON'} 取体失败 → ${hit.url}：${this.lastError}`);
     }
   }
 

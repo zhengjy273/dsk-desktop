@@ -162,6 +162,39 @@ export function extractUserTextFromRequest(postData: string): string | null {
 }
 
 /**
+ * 请求体里的模型标识字段。
+ *
+ * 为什么需要：重新生成/修改次数上限与单次输入上限是**按模型**下发的
+ * （`model_configs[].regenerate_quota`），不知道当前用的是哪个模型就只能回落第一个配置。
+ * 页面 DOM 里没有可靠锚点，但请求体里通常会带上用户当前选的模型。
+ *
+ * 只作为**提示**使用：调用方必须拿它去 `model_configs` 里核对，核对不上就丢弃
+ * （字段名一旦改名，硬猜会让界面显示错的模型上限）。
+ */
+const MODEL_PATHS: readonly (readonly (string | number)[])[] = [
+  ['model_type'],
+  ['modelType'],
+  ['model'],
+  ['chat_model'],
+];
+
+/** 从请求体提取模型标识（拿不到返回 null）。 */
+export function extractModelTypeFromRequest(postData: string): string | null {
+  if (typeof postData !== 'string' || postData.trim() === '') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(postData);
+  } catch {
+    return null;
+  }
+  const value = pickFirstString(parsed, MODEL_PATHS);
+  if (value === null) return null;
+  // 模型标识应当是短字符串；过长说明命中的是别的东西（例如 prompt 文本）
+  if (value.length > 64 || value.trim() === '') return null;
+  return value;
+}
+
+/**
  * 把用户文本包成契约消息。
  *
  * `aiGenerated: true` 是契约的强制字段（`isMirrorMessage` 要求），含义是

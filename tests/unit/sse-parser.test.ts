@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assembleTurn,
+  collectAccumulatedTokens,
   parseDeepSeekSse,
   parseSseDeltas,
   parseSseFrames,
@@ -353,3 +354,48 @@ describe('阶段归属与快照优先（真实样本发现的 bug 的回归测�
 function parseDeepSseSseSafe(raw: string) {
   return parseDeepSeekSse(raw);
 }
+
+/**
+ * 本会话累计 token（`accumulated_token_usage`）。
+ *
+ * 回归背景（2026-11-17 用户实测"token 恒为 0"）：站点流结束时发的**不是快照帧**，
+ * 而是路径补丁帧 —— `{"p":"response","o":"BATCH","v":[{"p":"accumulated_token_usage","v":110}]}`，
+ * 键 `p` 是被改的字段名、`v` 才是值。旧实现只认 `key === 'accumulated_token_usage'`，
+ * 于是只读到流式过程中的 `0`，终值全被丢掉。
+ */
+describe('累计 token：快照帧与路径补丁帧都要认', () => {
+  it('快照写法（键就是字段名）', () => {
+    const raw = `data: ${JSON.stringify({ v: { response: { accumulated_token_usage: 42 } } })}`;
+    expect(parseDeepSseSseSafe(raw).accumulatedTokens).toBe(42);
+  });
+
+  it('路径补丁写法（BATCH 帧，p/v 两段）—— 曾经漏读的真凶', () => {
+    const raw = `data: ${JSON.stringify({
+      p: 'response',
+      o: 'BATCH',
+      v: [{ p: 'accumulated_token_usage', v: 110 }, { p: 'quasi_status', v: 'FINISHED' }],
+    })}`;
+    expect(parseDeepSseSseSafe(raw).accumulatedTokens).toBe(110);
+  });
+
+  it('流式过程中的 0 不会盖掉后面出现的终值', () => {
+    const raw = [
+      `data: ${JSON.stringify({ v: { response: { status: 'WIP', accumulated_token_usage: 0 } } })}`,
+      `data: ${JSON.stringify({ p: 'response', o: 'BATCH', v: [{ p: 'accumulated_token_usage', v: 640 }] })}`,
+      'event: close',
+      'data: {}',
+      '',
+    ].join('\n\n');
+    expect(parseDeepSseSseSafe(raw).accumulatedTokens).toBe(640);
+  });
+
+  it('完全没这个字段时是 null，不是 0（0 表示"真的用了 0"，含义不同）', () => {
+    const raw = `data: ${JSON.stringify({ v: '没有 token 字段的一帧' })}`;
+    expect(parseDeepSseSseSafe(raw).accumulatedTokens).toBeNull();
+  });
+
+  it('camelCase 写法（history 归一化后的形状）也认', () => {
+    expect(collectAccumulatedTokens({ accumulatedTokenUsage: 9 })).toBe(9);
+    expect(collectAccumulatedTokens({ v: [{ p: 'accumulatedTokenUsage', v: 12 }] })).toBe(12);
+  });
+});

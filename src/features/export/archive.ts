@@ -4,9 +4,9 @@
  * 输入是 `ConversationMirror`（来自网络通道归档的结构化会话镜像），输出可直接落盘的内容与建议文件名。
  * 渲染本身复用 T3 的 `renderConversationMarkdown/Json`（**AI 生成标识恒为产物第一块**，R3 / DD-15）。
  *
- * 与 `src/main/exporter.ts` 的"页面快照导出"的关系：
- *  - 页面快照（M1）：DOM 可见文本，兜底用；
- *  - 归档导出（M2，本模块）：逐条消息（含深度思考与引用），网络通道观测所得。
+ * 与 `src/main/exporter.ts` 的关系：
+ *  - v1.1.4 起**只剩归档导出这一条路径**，页面快照与 JSON 出口已按用户要求取消；
+ *  - 归档 = 逐条消息（含深度思考与引用），网络通道观测所得。
  */
 import type { ConversationMirror } from '../../shared/ipc-contract.ts';
 import { AI_NOTICE_TEXT } from './ai-notice.ts';

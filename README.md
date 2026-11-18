@@ -50,9 +50,12 @@ node spike/registry-show.mjs dsh-deepseek-chat
 $env:DSK_USERDATA="$PWD\.spike-userdata-main"; node scripts\launch.mjs src\main\main.ts
 #
 #    托盘右键菜单（结构已固化为自检断言 trayMenuLabels，改乱会被自检暴露）：
-#      显示 / 隐藏 · 迷你窗 · 置顶窗口 · 查看本地归档… · 导出归档(→ Markdown/JSON)
-#      · 导出页面快照(→ Markdown/JSON) · 诊断（写日志） · 清除本地归档数据…
-#      · 账号：<当前账号>(→ 切换 / 添加自定义账号 / 删除指定账号 / 退出登录) · 退出
+#      显示 / 隐藏 · 迷你窗 · 置顶窗口 · 查看本地归档… · 导出归档(→ 当前会话/历史会话 → Markdown)
+#      · 清除本地归档数据… · 诊断（写日志）
+#      · 账号：<当前账号> · <额度摘要>(→ 切换 / 添加自定义账号 / 删除指定账号 / 退出登录) · 退出
+#      v1.1.4 起：取消「导出页面快照」，原位由「清除本地归档数据…」接替；导出只剩 Markdown，
+#      标签不再带"（结构化）"（JSON 出口已去掉）。
+#      v1.1.5 起：「清除本地归档数据…」连 `userData/quota/` 的额度缓存一起清。
 #
 #    账号隔离：登录态按 partition（`persist:dsk-<account>`）、本地归档按 `mirror/<account>/`。
 #      切换 / 添加 / 退出登录会**重启应用**（partition 在 app 启动时决定）；删除账号需**两道确认**，
@@ -60,7 +63,7 @@ $env:DSK_USERDATA="$PWD\.spike-userdata-main"; node scripts\launch.mjs src\main\
 #
 #    「查看本地归档…」= 只读查看器（src/shell-ui/archive.html）：
 #      左侧会话列表 + 全文检索（空格分隔=AND，含深度思考内容，命中显示片段）
-#      + 逐条消息详情（顶部固定 AI 生成标识，R3）+ 直接导出 Markdown/JSON。
+#      + 逐条消息详情（顶部固定 AI 生成标识，R3）+ 导出 Markdown（v1.1.4 起只剩这一个出口）。
 #      安全：contextIsolation + sandbox + 仅 4 个白名单 IPC（主进程再校验参数）。
 #
 #    诊断项会做一次只读的选择器探测 + 结构发现，结果写入 logs\app.log 的 [selectors] / [discover] 行。
@@ -140,14 +143,28 @@ pnpm check                          # = strip-only 检查 + typecheck + 全部�
 |---|---|
 | T0 契约层（`src/shared/**`） | ✅ 完成 |
 | T1 外壳（单会话视图 / 托盘 / 快捷键 / 迷你窗 / 主题 / 代理 / 导出） | ✅ 自动自检全绿 → `docs/m1-evidence/t1-selftest.json` |
-| T2 会话与注入（`src/session/**`、`src/inject/**`） | ✅ 指纹模块 + **网络通道镜像**（SSE / 请求体，只读）+ 选择器注册表（失配降级 / 诊断 / 结构发现） |
+| T2 会话与注入（`src/session/**`、`src/inject/**`） | ✅ **网络通道镜像**（SSE / 请求体，只读）+ 选择器注册表（失配降级 / 诊断 / 结构发现）；⚠️ 指纹改写**未接线**（见下方说明） |
 | T3 归档与导出（`src/store/**`、`src/features/**`） | ✅ 完成（覆盖率 store 87% / export 96%） |
 | T4 打包与更新 | ✅ M3：electron-builder 打包（NSIS 安装包 + 便携版）**均已实测运行**；图标经 `win.icon` 生效，**任务栏图标已确认**为自定义图标；自动更新未做 |
 | T5 夹具与回归 | 🚧 mock 站点 ✅、单测 ✅；smoke 与 `.dsh/skills` 待做 |
 
-**M1 的已知边界（诚实说明）**：导出目前是**页面快照**（AI 标识块 + 页面全文），**不是**结构化归档 ——
-站点 DOM 用 CSS Modules 哈希类名、图标按钮无可访问名称（见 `docs/M0-REPORT.md` §二），
-结构化数据要等 T2 的网络通道（SSE）落地后才可靠（DD-06）。
+**导出的现状（v1.1.4，诚实说明）**：只剩**一条**导出路径 —— **导出归档**（结构化：逐条消息 + 深度思考 + 引用，
+来自 T2 的网络通道 SSE 观测，产物 AI 生成标识恒为第一块），且**只出 Markdown**。
+M1 时期的**页面快照导出**（AI 标识块 + 页面全文）与 JSON 出口已按用户要求在 v1.1.4 整个取消：
+快照只是页面文本堆叠、不含消息结构，与归档导出重复且容易被误当成结构化产物。
+注意归档来自**运行期流式观测**，历史消息不追溯补档。
+
+**指纹改写的现状（v1.1.4，诚实说明）**：`src/session/fingerprint.ts` 是一个**纯函数库**
+（`buildUserAgent` / `buildClientHints` / `applyFingerprintHeaders` / `stripElectronBrand`，
+单测 `tests/unit/fingerprint.test.ts` 覆盖），但**主进程没有接线** ——
+`src/main/main.ts` 的 `setupSession()` 里没有 `session.webRequest.onBeforeSendHeaders`，
+全库也搜不到 `setUserAgent`。因此**运行时 UA 仍是 Electron 默认值**（含 `Electron/44.x`），
+`Sec-CH-UA` 系列头也照 Electron 原样不发。
+M0 时期的 V5a/V5b/V5c 三条 PASS 是在实验脚本 `spike/main.mjs:200` 的 `onBeforeSendHeaders`
+里跑出来的（该脚本仍在，改写逻辑完整），**但那段代码没有搬进 M1 的主进程**。
+按用户决定（2026-11-17）：**保持现状、只改文档**，不在主进程接线。
+若将来需要真正生效，把 `spike/main.mjs` 里那段改写搬进 `setupSession()` 即可，
+并应在 `runUtilSelftest()` 加一条"接线存在"的断言，避免文档与代码再次脱节。
 
 **架构要点（M1 最终：无标签页 · 单会话）**：窗口里只显示**一个** `chat.deepseek.com` 页面
 （`src/main/content-view.ts`），内容占满窗口。**不做标签页** —— 站点自带的侧边栏已经承担会话管理，

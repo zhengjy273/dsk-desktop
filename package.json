@@ -1,6 +1,6 @@
 {
   "name": "dsk-desktop",
-  "version": "1.0.1",
+  "version": "1.1.5",
   "private": true,
   "description": "本机自用：DeepSeek 免费网页版的桌面壳（非官方软件，请勿公开分发）",
   "type": "module",

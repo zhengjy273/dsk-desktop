@@ -45,19 +45,37 @@ import {
   INTERNAL_PRODUCT_NAME,
   PARTITION_PREFIX,
   SITE_ORIGIN,
+  isSameSiteUrl,
 } from '../shared/brand.ts';
 import { AI_NOTICE_TEXT } from '../features/export/ai-notice.ts';
+import { renderArchive } from '../features/export/archive.ts';
 import {
   extractConversationId,
+  extractModelTypeFromRequest,
   extractSessionIdFromRequest,
   extractUserTextFromRequest,
   turnFidelity,
   turnToMirrorMessage,
   userTextToMirrorMessage,
 } from '../session/deepseek-mirror.ts';
-import type { MirrorMessage } from '../shared/ipc-contract.ts';
+import type { ConversationMirror, MirrorMessage } from '../shared/ipc-contract.ts';
 import { NetworkMirror } from '../session/network-mirror.ts';
 import { parseDeepSeekSse } from '../session/sse-parser.ts';
+import {
+  accountQuotaSuffix,
+  composeQuotaView,
+  formatTrayTooltip,
+  parseChatStatusResponse,
+  parseHistoryAccumulatedTokens,
+  parseHistoryActionUsage,
+  parseHistorySessionId,
+  classifyQuotaAction,
+  parseModelSettingsResponse,
+} from '../session/quota-parser.ts';
+import type { QuotaState } from '../session/quota-parser.ts';
+import { QuotaStore } from '../store/quota-store.ts';
+import { buildQuotaInjectScript, buildQuotaResetScript, QUOTA_POS_RESET_MARK } from '../inject/quota-overlay.ts';
+import type { QuotaView } from '../shared/ipc-contract.ts';
 import {
   buildProbeScript,
   buildStructureDiscoveryScript,
@@ -79,12 +97,7 @@ import {
   writeCurrentAccount,
 } from './accounts.ts';
 import { ContentView } from './content-view.ts';
-import {
-  exportConversationArchive,
-  exportCurrentPage,
-  renderSnapshotJson,
-  renderSnapshotMarkdown,
-} from './exporter.ts';
+import { exportConversationArchive } from './exporter.ts';
 import { applyProxy, normalizeProxyConfig, probeProxy, validateProxyConfig } from './proxy.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -115,7 +128,41 @@ const ACCOUNT = isSafeAccountId(envAccount) ? envAccount : (savedAccount ?? DEFA
 const PARTITION = `${PARTITION_PREFIX}${ACCOUNT}`;
 const HOTKEY = process.env.DSK_HOTKEY ?? 'Control+Shift+D';
 const START_URL = `${SITE_ORIGIN}/`;
+/**
+ * 启动页（仅调试用）：`DSK_START_URL=https://chat.deepseek.com/a/chat/s/<id>` 可直接打开指定会话。
+ *
+ * 为什么需要：限额注入的锚点（回答底部的 AI 声明、输入栏下方那行）只在**会话页**出现，
+ * 首页没有。调试"注入没生效"时必须能直接进会话页，否则只能靠猜。
+ * 只接受站点自身的 https 地址，其他值一律回落首页（不接受任意 URL）。
+ */
+const DEBUG_START_URL = (() => {
+  const raw = process.env.DSK_START_URL?.trim();
+  if (raw === undefined || raw === '') return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:' || !isSameSiteUrl(raw)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+})();
 const MINI_SIZE = { width: 380, height: 520 };
+/**
+ * 启动即进迷你窗（仅调试用）：`DSK_START_MINI=1`。
+ *
+ * 为什么需要：迷你窗的字号缩放/浮层隐藏都只在迷你窗状态生效，而进入迷你窗的入口是托盘菜单，
+ * 自动化验证点不到托盘。有了这个开关就能直接启动到迷你窗态再去探测/截图。
+ */
+const DEBUG_START_MINI = process.env.DSK_START_MINI === '1';
+/**
+ * 迷你窗下的页面缩放比例。
+ *
+ * 380×520 里按 100% 渲染，站点正文一行只放得下几个字，读起来很累；缩到 80%
+ * 既能让字号小一圈、一屏多读到几行，又不至于小到看不清（用户要求"字号自动缩小方便阅读"）。
+ * 恢复窗口时按 `NORMAL_ZOOM_FACTOR` 还原。
+ */
+const MINI_ZOOM_FACTOR = 0.8;
+const NORMAL_ZOOM_FACTOR = 1;
 /** 加载超时：超时即切本地错误页（限流/断网时页面会长时间不出内容，不能留空白） */
 const LOAD_TIMEOUT_MS = Number(process.env.DSK_LOAD_TIMEOUT_MS ?? '25000');
 const ERROR_PAGE_PATH = join(ROOT, 'src', 'shell-ui', 'error.html');
@@ -144,6 +191,33 @@ let lastSelectorProbeAt = 0;
  */
 let pendingUser: { text: string; sessionId: string | null } | null = null;
 let tray: Tray | null = null;
+/**
+ * 限额状态（按账号隔离的磁盘缓存 + 内存态）。
+ *
+ * 为什么不放 `mirrorStore`：归档是"用户自己的对话内容"（R5），额度是"账号的即时状态"，
+ * 生命周期与隐私级别都不同 —— 分开存、分开清（删账号时两边各自清）。
+ */
+let quotaStore: QuotaStore | null = null;
+/** 当前账号的最新展示快照（托盘 tooltip / 菜单 / 注入都读它） */
+let quotaView: QuotaView | null = null;
+/** 本会话累计已用 token（来自 SSE 或 history 接口；切换会话时重置） */
+let sessionTokens: number | null = null;
+/** 本会话 token 归属的会话 id（防止把 A 会话的用量显示到 B 会话上） */
+let sessionTokensFor = '';
+/** 当前会话的已用操作次数；history 能提供全量，运行期请求作即时补充。 */
+let actionUsage: { regenerateUsed: number; editUsed: number } = { regenerateUsed: 0, editUsed: 0 };
+let actionUsageKnown = false;
+let actionUsageEstimated = true;
+/** 最近一次已知的模型标识（页面没有稳定锚点，只能从 settings/SSE 里推断） */
+let currentModelType: string | null = null;
+/**
+ * 用户拖动浮层后的位置（页面视口坐标）。
+ *
+ * 为什么放在主进程并落盘：页面刷新（F5 / 切账号重载）会重建 DOM，
+ * 页面内的 `state.manualPos` 随之丢失；用户要求"切换会话位置不变"，
+ * 重载后也得回到他摆的位置。null = 用默认位置（贴输入框右上角）。
+ */
+let overlayPos: { x: number; y: number } | null = null;
 let onTop = false;
 let mini = false;
 let normalBounds: Electron.Rectangle | null = null;
@@ -156,6 +230,30 @@ let normalBounds: Electron.Rectangle | null = null;
  * 并过滤掉明显异常的值。
  */
 let lastNormalBounds: Electron.Rectangle | null = null;
+
+/**
+ * 待清理的延时任务（退出时统一 clearTimeout）。
+ *
+ * 为什么要记：`app.exit(0)` 会直接杀进程，但在此之前若已经排了注入重试、
+ * 选择器探测、视口补钉等 timeout，它们会持有闭包（含 mirror/content/webContents 引用）。
+ * 进程立刻死掉时实体影响很小，但**退出前那几十毫秒**里仍可能回调到已销毁的对象上
+ * 打出误导性错误日志。统一在 `quit()` 里清掉，让退出路径干净。
+ */
+const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+
+/** 注册一个退出时会被清掉的 timeout（返回值仍可照常传给 clearTimeout）。 */
+function later(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
+  const t = setTimeout(() => {
+    pendingTimers.delete(t);
+    try {
+      fn();
+    } catch (e) {
+      console.warn('[timer] 延时任务异常：', e instanceof Error ? e.message : String(e));
+    }
+  }, ms);
+  pendingTimers.add(t);
+  return t;
+}
 
 const self: Record<string, unknown> = {
   electron: process.versions.electron,
@@ -198,6 +296,30 @@ function activeWc(): Electron.WebContents | null {
   return content?.webContents() ?? null;
 }
 
+/**
+ * 按当前窗口状态调整页面缩放（迷你窗缩小字号，普通窗口还原）。
+ *
+ * 为什么必须单独一个函数并在多个时机调用：缩放是**按 WebContents（进而按 origin）**生效的，
+ * 而切账号会换 partition、换账号即换 WebContents —— 新页面加载完不重新应用一次，
+ * 迷你窗里换账号就会退回 100%，字数一多就更挤（用户诉求正是"方便阅读"）。
+ */
+function applyViewZoom(): void {
+  const wc = activeWc();
+  if (!wc || wc.isDestroyed()) return;
+  const factor = mini ? MINI_ZOOM_FACTOR : NORMAL_ZOOM_FACTOR;
+  try {
+    wc.setZoomFactor(factor);
+    // 注意：`getZoomFactor()` 在**同一个 tick** 里读到的还是变更前的值（实测日志
+    // 一直显示 zoom=1，功能其实已经生效）。所以对外日志用目标值 `zoomFactorTarget`，
+    // 真实读回值另记一个字段，供需要核对渲染结果的地方看。
+    self.zoomFactorTarget = factor;
+    self.zoomFactor = factor;
+  } catch (e) {
+    // 页面还没就绪时设置会抛（正在导航）；不是致命错误，等下次事件再补
+    self.lastZoomError = String((e as Error)?.message ?? e);
+  }
+}
+
 /* ------------------------------------------------------------------ 窗口 */
 
 function createWindow(): void {
@@ -215,7 +337,7 @@ function createWindow(): void {
     win,
     partition: PARTITION,
     siteOrigin: SITE_ORIGIN,
-    startupUrl: SELFTEST ? 'about:blank' : START_URL,
+    startupUrl: SELFTEST ? 'about:blank' : (DEBUG_START_URL ?? START_URL),
     errorPagePath: ERROR_PAGE_PATH,
     loadTimeoutMs: LOAD_TIMEOUT_MS,
     onExternal: (url) => {
@@ -229,22 +351,110 @@ function createWindow(): void {
     },
     onNavigated: (url) => {
       self.pageUrl = url;
+      // 页面导航会按 origin 重置缩放（Electron 的 zoom 是 per-origin 持久化的），
+      // 迷你窗里换账号/重载后必须重新应用一次，否则字号会悄悄退回 100%。
+      applyViewZoom();
+      // 切换会话时清空"本会话已用量"——否则会把上一个会话的 token 显示到新会话上。
+      // 会话 id 取自页面 URL（`/a/chat/s/<id>`）；首页（无 id）同样视为换会话。
+      const convId = extractConversationId(url) ?? '';
+      if (convId !== sessionTokensFor) {
+        sessionTokensFor = convId;
+        // 先用本地按会话缓存兜底：history_messages 命中服务端缓存时返回空消息列表，
+        // 那时拿不到用量；但切回旧会话仍应显示上次已知值，而不是把输入栏那行还原成原文。
+        sessionTokens = convId === '' ? null : (quotaStore?.getSessionTokens(ACCOUNT, convId) ?? null);
+        // 已用次数也是"每会话"的量：切会话清零，等该会话自己的 history 校准。
+        // （运行期请求累加只对当前会话有意义，跨会话带过去会把 A 会话的次数算到 B 上。）
+        // 先读本地按会话缓存，避免重启后次数归零（用户会以为额度回满了）。
+        const cachedActions = convId === '' ? null : quotaStore?.getSessionActions(ACCOUNT, convId);
+        if (cachedActions !== null && cachedActions !== undefined) {
+          actionUsage = { ...cachedActions };
+          actionUsageKnown = true;
+          actionUsageEstimated = true;
+        } else {
+          actionUsage = { regenerateUsed: 0, editUsed: 0 };
+          actionUsageKnown = false;
+          actionUsageEstimated = true;
+        }
+        refreshQuotaView();
+      }
       // 页面就绪后做一次选择器健康探测（节流 5s，并延后 1.5s 等 DOM 稳定）
       const now = Date.now();
       if (now - lastSelectorProbeAt > 5000) {
         lastSelectorProbeAt = now;
-        setTimeout(() => void runSelectorProbe(), 1500);
+        later(() => void runSelectorProbe(), 1500);
+      }
+      // 页面刚就绪时注入 —— 否则要等到下一次额度变化才出现 UI（首次打开可能几分钟后）。
+      // 分三次重试：站点是 SPA + 虚拟列表，回答节点渲染时间不确定；实测 2.5s 时常常还没渲染完，
+      // 只靠 MutationObserver 兜底会晚 1–2 秒。多次重试让"打开即有"更稳（注入是幂等的）。
+      for (const delay of [2500, 6000, 12000]) {
+        later(() => {
+          if (quotaView !== null) void pushQuotaToPage(quotaView);
+        }, delay);
+      }
+    },
+    /**
+     * 只读旁听页面 console —— 目前只有一个用途：
+     * 浮层「恢复默认位置」在页面内清掉 manualPos 后，通过固定标记通知主进程把
+     * overlayPos 也清掉。不这么做的后果（实测）：主进程还留着旧坐标，
+     * 页面一重载就把用户刚清掉的位置又灌回来。
+     */
+    onConsoleMessage: ({ text }) => {
+      if (text.indexOf(QUOTA_POS_RESET_MARK) < 0) return;
+      if (overlayPos !== null) {
+        overlayPos = null;
+        console.log('[quota] 页面请求恢复默认位置 → 已清除主进程记住的浮层坐标');
       }
     },
   });
 
+  /**
+   * 把内容视图钉到窗口客户区尺寸 —— **带延时重钉**。
+   *
+   * 为什么不能只靠 `resize` 事件（用户实测 bug）：进入/退出全屏与最大化时，Windows 是
+   * 分几帧把窗口尺寸改到位的，`resize` 只保证"尺寸变了"，不保证"变完了"。实测在
+   * 全屏过渡里首次触发时 `getContentBounds()` 可能还是旧值，于是视图被设成旧尺寸，
+   * 之后再没有 `resize` 来纠正 → 页面比窗口小一圈，底部露一条黑带（正是用户截图里的现象）。
+   *
+   * 因此每次状态切换都按几个时间点各钉一次：过渡动画期间任何一帧读了旧值，后面都会纠正。
+   * 补钉很便宜（一次 setBounds），且 `syncBounds` 内部会跳过"尺寸没变"的情况。
+   */
+  /**
+   * 补钉句柄（N17）：`resized` 在拖拽/过渡期间可能高频触发，若只往 `pendingTimers` 里追加，
+   * 一次拖拽就能堆出成百上千个 timer（每个都持有闭包）。每次补钉先撤销上一批，
+   * 保证同时最多 4 个在飞。
+   */
+  let viewPinTimers: ReturnType<typeof setTimeout>[] = [];
+  const pinViewBounds = (): void => {
+    for (const t of viewPinTimers) {
+      clearTimeout(t);
+      pendingTimers.delete(t);
+    }
+    viewPinTimers = [];
+    content?.syncBounds();
+    for (const delay of [60, 180, 420, 900]) {
+      // 注入层自己监听 window resize 会重贴浮层位置，这里只管把视图尺寸钉对。
+      // 用 `later` 而不是裸 setTimeout：它会把句柄记进 `pendingTimers`，
+      // 退出时统一清掉，避免回调打到已销毁的 webContents 上。
+      const timer = later(() => {
+        viewPinTimers = viewPinTimers.filter((x) => x !== timer);
+        content?.syncBounds();
+      }, delay);
+      viewPinTimers.push(timer);
+    }
+  };
+
   /** 记录"正常状态"下的 bounds（过滤最小化/全屏/最大化/异常值），供迷你窗切换当基准。 */
   const rememberNormalBounds = (): void => {
+    // 迷你窗的尺寸不是"正常尺寸"：进/出迷你窗时 setBounds 触发的 resize/move 会把 380×520
+    // 写进基准，退出后就回不到用户原来的大小（N32）。mini 期间一律不记。
+    if (mini) return;
     if (!win || win.isMinimized() || win.isFullScreen()) return;
     // **最大化也不能记**：最大化时的尺寸不是"正常尺寸"，拿它当迷你窗基准会把迷你窗摆到屏幕外
     //（用户实测：最大化 → 最小化 → 迷你窗，尺寸/位置不对）。
     if (win.isMaximized()) return;
-    const b = win.getContentBounds();
+    // 统一成**外框**坐标（getBounds / setBounds 同一语义）。用 getContentBounds 记基准、
+    // setBounds 恢复会差一个边框+标题栏：每进/出迷你窗一次客户区就缩一次（BUG-4）。
+    const b = win.getBounds();
     if (b.width < 200 || b.height < 200 || b.x < -10000 || b.y < -10000) return;
     lastNormalBounds = b;
   };
@@ -252,6 +462,12 @@ function createWindow(): void {
     content?.syncBounds();
     rememberNormalBounds();
   });
+  /**
+   * `resized`：Electron 在窗口**结束**调整尺寸后才发这个事件，比 `resize` 可靠得多 ——
+   * 全屏/最大化过渡期间 `resize` 可能只发一次且那一刻 `getContentBounds()` 还是旧值，
+   * 就会把视图定成旧尺寸、之后再没人纠正 → 页面比窗口小一圈、底部露黑带（用户实测）。
+   */
+  win.on('resized', () => pinViewBounds());
   win.on('move', rememberNormalBounds);
 
   /**
@@ -274,9 +490,19 @@ function createWindow(): void {
       /* 窗口销毁中 */
     }
     console.log(`[t1] mini 状态因 ${why} 自动归位（已恢复 taskbar / resizable / 置顶策略）`);
+    // 已不在迷你窗 —— 字号还原 + 把数据浮窗恢复出来（迷你窗里两者都是收起的）
+    applyViewZoom();
+    refreshQuotaView();
   };
-  win.on('maximize', () => dropMini('maximize'));
-  win.on('enter-full-screen', () => dropMini('enter-full-screen'));
+  win.on('maximize', () => {
+    dropMini('maximize');
+    // 最大化：客户区尺寸会连续变化几帧，resize 之外再钉几次（用户实测：最大化后页面不铺满）
+    pinViewBounds();
+  });
+  win.on('enter-full-screen', () => {
+    dropMini('enter-full-screen');
+    pinViewBounds();
+  });
   // 退出最大化/全屏是**异步**的（走 Windows 消息循环），若此时处于迷你窗，需要重新钉一次尺寸，
   // 否则之前的 setBounds 会在"退出最大化"的过程中被覆盖 ——
   // 用户实测：最大化 → 最小化 → 点迷你窗，尺寸/位置不对（restore 侧已补，这里补 unmaximize 侧）。
@@ -285,14 +511,14 @@ function createWindow(): void {
       applyMiniBounds();
       self.miniBoundsAfterUnmaximize = win?.getContentBounds() ?? null;
     }
-    content?.syncBounds();
+    pinViewBounds();
   });
   win.on('leave-full-screen', () => {
     if (mini) {
       applyMiniBounds();
       self.miniBoundsAfterLeaveFullScreen = win?.getContentBounds() ?? null;
     }
-    content?.syncBounds();
+    pinViewBounds();
   });
 
   /**
@@ -316,7 +542,7 @@ function createWindow(): void {
       applyMiniBounds();
       self.miniBoundsAfterRestore = win?.getContentBounds() ?? null;
     }
-    content?.syncBounds();
+    pinViewBounds();
     console.log(
       `[t1] restored → mini=${mini} onTop=${onTop} bounds=${JSON.stringify(win?.getContentBounds())}`,
     );
@@ -410,14 +636,73 @@ function applyMiniBounds(): void {
   win.setBounds({ x, y, width: MINI_SIZE.width, height: MINI_SIZE.height });
 }
 
+/**
+ * 把 bounds 取整到 DIP 整数。
+ *
+ * 为什么需要：Windows 的窗口矩形是**物理像素**，DIP 值除回来常带小数（实测 1180.6×821.1）。
+ * 直接用带小数的值当基准再 setBounds，物理↔DIP 取整会每次多出 1~2 DIP，来回切迷你窗就
+ * 单调增长（BUG-6，func-tester2 实测 3 次累计 +2.8×+6.3 DIP）。取整后基准恒定。
+ */
+function roundRect(r: Electron.Rectangle): Electron.Rectangle {
+  return {
+    x: Math.round(r.x),
+    y: Math.round(r.y),
+    width: Math.round(r.width),
+    height: Math.round(r.height),
+  };
+}
+
+/**
+ * 恢复普通尺寸，并校正 DPI 取整偏差。
+ *
+ * Windows 的 `setBounds` 是 DIP→物理取整，回读时 Electron 再取整；某些缩放比下
+ * `setBounds(W)` 会回读成 W+1，于是每进/出迷你窗一次窗口就长 1~2 DIP（BUG-6，
+ * func-tester2 实测 3 次累计 +2.8×+6.3 DIP）。这里读回差值再设一次（最多两轮），
+ * 把窗口钉回目标值，避免单调累积。
+ */
+function applyNormalBounds(back: Electron.Rectangle): void {
+  if (!win) return;
+  win.setBounds(back);
+  for (let i = 0; i < 2; i += 1) {
+    const actual = win.getBounds();
+    const dw = actual.width - back.width;
+    const dh = actual.height - back.height;
+    const dx = actual.x - back.x;
+    const dy = actual.y - back.y;
+    if (dw === 0 && dh === 0 && dx === 0 && dy === 0) return;
+    win.setBounds(
+      roundRect({
+        x: back.x - dx,
+        y: back.y - dy,
+        width: back.width - dw,
+        height: back.height - dh,
+      }),
+    );
+  }
+}
+
 function setMini(on: boolean, skipShow = false): void {
   if (!win) return;
+  const wasMini = mini;
   const steps: string[] = [];
   try {
     if (on && !mini) {
       // 先恢复普通状态：否则 setBounds 不生效，而且基准尺寸会取到最小化时的异常值
       normalizeWindowState(steps);
-      normalBounds = lastNormalBounds ?? win.getContentBounds();
+      // 基准：窗口处于正常状态时以**当前**外框为准；最小化/最大化/全屏时用最近一次记录的正常值。
+      // 统一写回 lastNormalBounds，避免 applyMiniBounds 用到过期基准。
+      const current = win.getBounds();
+      const normal = roundRect(
+        win.isMinimized() || win.isMaximized() || win.isFullScreen()
+          ? (lastNormalBounds ?? current)
+          : current,
+      );
+      normalBounds = normal;
+      lastNormalBounds = normal;
+      // **先置 mini 标记再 setBounds**：否则 applyMiniBounds 触发的 resize 会走 rememberNormalBounds，
+      // 把迷你尺寸写进 lastNormalBounds。配合下面守卫（迷你期间不记录），第一次进出就会污染基准，
+      // 第二次往返退出时窗口卡在迷你尺寸（BUG-5，func-tester2 实测 100% 复现）。
+      mini = true;
       applyMiniBounds();
       steps.push('setBounds');
       // 迷你窗**固定尺寸**：禁止拖拽边缘改大小。
@@ -428,7 +713,6 @@ function setMini(on: boolean, skipShow = false): void {
       // 找回入口：托盘双击、托盘菜单"显示 / 隐藏"。退出迷你窗时会在下面恢复。
       win.setSkipTaskbar(true);
       steps.push('setSkipTaskbar(true)');
-      mini = true;
       applyAlwaysOnTop();
       steps.push('alwaysOnTop');
     } else if (!on && mini) {
@@ -439,10 +723,15 @@ function setMini(on: boolean, skipShow = false): void {
       steps.push('setResizable(true)');
       win.setSkipTaskbar(false);
       steps.push('setSkipTaskbar(false)');
-      const back = normalBounds ?? lastNormalBounds;
-      if (back) win.setBounds(back);
-      steps.push('restoreBounds');
+      const backRaw = normalBounds ?? lastNormalBounds;
+      // **先清 mini 标记再 setBounds**：让这次 resize 被 rememberNormalBounds 记成新的正常基准
+      //（否则 N32 的守卫会把它吞掉），并显式写回，不依赖窗口事件的派发时序。
+      // 基准取整，避免物理↔DIP 取整每往返累积 1~2 DIP（BUG-6）。
+      const back = backRaw ? roundRect(backRaw) : null;
       mini = false;
+      if (back) applyNormalBounds(back);
+      lastNormalBounds = back ?? lastNormalBounds;
+      steps.push('restoreBounds');
       applyAlwaysOnTop();
     }
     // 迷你窗由托盘菜单触发，此时窗口可能处于隐藏状态 —— 不强制显示就会"看起来没效果"
@@ -458,8 +747,15 @@ function setMini(on: boolean, skipShow = false): void {
   self.mini = mini;
   self.miniSteps = steps;
   self.miniBounds = win.getContentBounds();
+  content?.syncBounds();
+
+  // 迷你窗里字号缩小一圈（用户要求"方便阅读"），恢复窗口时还原。
+  // 必须在打日志**之前**应用：`getZoomFactor()` 在同一 tick 读到的是旧值，
+  // 而 `zoomFactorTarget` 由 applyViewZoom 写入 —— 顺序反了日志就会打上一轮的缩放值（BUG-3）。
+  applyViewZoom();
+
   console.log(
-    `[t1] setMini(${on}) → mini=${mini} steps=[${steps.join('>')}] bounds=${JSON.stringify(self.miniBounds)}`,
+    `[t1] setMini(${on}) → mini=${mini} steps=[${steps.join('>')}] bounds=${JSON.stringify(self.miniBounds)} zoom=${String(self.zoomFactorTarget)}`,
   );
 
   // 退出最小化/最大化/全屏都是**异步**的（走 Windows 消息循环），系统随后会把窗口还原成
@@ -470,27 +766,25 @@ function setMini(on: boolean, skipShow = false): void {
     (steps.includes('restore') || steps.includes('unmaximize') || steps.includes('exitFullScreen'))
   ) {
     // 钉两道：Windows 的还原动画时长不固定，150ms 可能不够，600ms 再兜一次。
-    setTimeout(() => {
+    later(() => {
       if (mini) applyMiniBounds();
     }, 150);
-    setTimeout(() => {
+    later(() => {
       if (mini) applyMiniBounds();
     }, 600);
   }
 
-  content?.syncBounds();
+  // 迷你窗里不显示数据浮窗（用户要求）：切换后重新推一次，让注入层据此隐藏/恢复。
+  if (mini !== wasMini) refreshQuotaView();
 }
 
-async function doExport(format: 'md' | 'json'): Promise<void> {
-  const wc = activeWc();
-  if (!wc) {
-    self.lastExportError = '内容视图尚未就绪';
-    return;
-  }
-  const r = await exportCurrentPage(wc, format, { defaultDir: app.getPath('downloads') });
-  self.lastExport = r;
-  if (!r.ok && !r.canceled) self.lastExportError = r.error ?? '导出失败';
-}
+/**
+ * v1.1.4：**页面快照导出已取消**（用户要求）。
+ *
+ * 原来的「导出页面快照」（DOM 可见文本 → Markdown/JSON）整个入口被移除：
+ * 它产出的只是页面文本堆叠、不含消息结构，与「导出归档」重复且更容易被误当成结构化产物。
+ * `src/main/exporter.ts` 里的快照渲染纯函数仍保留，供自检继续校验"产物必须带 AI 生成标识"（R3）。
+ */
 
 /**
  * M2：导出**结构化归档**（来自网络通道观测并归档的会话镜像）。
@@ -499,7 +793,7 @@ async function doExport(format: 'md' | 'json'): Promise<void> {
  *  1) 归档存储未就绪；2) 当前页面不是具体会话（URL 无会话 id）；3) 该会话还没有归档消息
  *     ——归档来自运行期流式观测，**历史会话无法追溯补档**，这点必须说清楚。
  */
-async function doExportArchive(format: 'md' | 'json'): Promise<void> {
+async function doExportArchive(): Promise<void> {
   const pageUrl = content?.currentUrl() ?? '';
   if (!mirrorStore) {
     self.lastArchiveExportError = '归档存储未就绪';
@@ -538,7 +832,7 @@ async function doExportArchive(format: 'md' | 'json'): Promise<void> {
     return;
   }
 
-  const r = await exportConversationArchive(conversation, format, { defaultDir: app.getPath('downloads') });
+  const r = await exportConversationArchive(conversation, { defaultDir: app.getPath('downloads') });
   self.lastArchiveExport = r;
   if (r.ok) {
     // 记下路径：以后核对"导出到底写哪儿了"只看日志即可
@@ -550,6 +844,16 @@ async function doExportArchive(format: 'md' | 'json'): Promise<void> {
 
 function quit(): void {
   globalShortcut.unregisterAll();
+  // 先把所有排队的延时任务清掉：注入重试 / 选择器探测 / 视口补钉都持有闭包，
+  // 放它们跑进已销毁的 webContents 只会打出误导性的错误日志。
+  for (const t of pendingTimers) {
+    try {
+      clearTimeout(t);
+    } catch {
+      /* 已触发 */
+    }
+  }
+  pendingTimers.clear();
   mirror?.detach();
   try {
     if (archiveWin && !archiveWin.isDestroyed()) archiveWin.destroy();
@@ -568,7 +872,7 @@ function quit(): void {
  *
  * 补的是实测痛点：历史会话即使已归档，若不在页面上打开就导不出来 —— 归档的意义就打折了。
  */
-async function doExportArchiveById(conversationId: string, format: 'md' | 'json'): Promise<void> {
+async function doExportArchiveById(conversationId: string): Promise<void> {
   if (!mirrorStore) {
     self.lastArchiveExportError = '归档存储未就绪';
     return;
@@ -583,7 +887,7 @@ async function doExportArchiveById(conversationId: string, format: 'md' | 'json'
     });
     return;
   }
-  const r = await exportConversationArchive(conversation, format, { defaultDir: app.getPath('downloads') });
+  const r = await exportConversationArchive(conversation, { defaultDir: app.getPath('downloads') });
   self.lastArchiveExport = r;
   if (r.ok) {
     console.log(`[archive] 已导出归档（按 id ${conversationId}）→ ${r.path}（${r.chars ?? 0} 字符）`);
@@ -613,10 +917,11 @@ async function doClearArchive(): Promise<void> {
     message: '确定清除本地归档数据？',
     detail:
       `将删除本机归档：${list.length} 个会话、共 ${total} 条消息\n` +
-      `（位于 ${self.mirrorStoreDir ?? 'userData\\mirror'}）\n\n` +
-      '· 只影响本机保存的归档副本，站点上的对话不受影响\n' +
+      `（位于 ${self.mirrorStoreDir ?? 'userData\\mirror'}）\n` +
+      '以及额度缓存（限额快照、按会话用量）\n\n' +
+      '· 只影响本机保存的副本，站点上的对话与账号额度不受影响\n' +
       '· 此操作**无法撤销**\n' +
-      '· 清除后，已归档的内容需要重新产生新回答才能再次归档',
+      '· 清除后，已归档的内容需要重新产生新回答才能再次归档；额度数据会在页面下次同步时重新采集',
     buttons: ['取消', '清除'],
     defaultId: 0,
     cancelId: 0,
@@ -628,13 +933,28 @@ async function doClearArchive(): Promise<void> {
 
   try {
     const removed = mirrorStore.clearAll();
-    self.lastClearArchive = { removedAccountDirs: removed, conversations: list.length, messages: total };
-    console.log(`[archive] 已清除本地归档：${removed} 个账号目录（原 ${list.length} 会话 / ${total} 条消息）`);
+    // 额度缓存一并清掉：用户点的是"清除本地数据"，不该留下一份账号限额快照与按会话用量。
+    const quotaRemoved = quotaStore?.clearAll() ?? 0;
+    // 内存态也要复位，否则托盘/浮层还显示着刚被删掉的旧数据。
+    sessionTokens = null;
+    quotaView = null;
+    refreshQuotaView();
+    self.lastClearArchive = {
+      removedAccountDirs: removed,
+      conversations: list.length,
+      messages: total,
+      quotaFiles: quotaRemoved,
+    };
+    console.log(
+      `[archive] 已清除本地归档：${removed} 个账号目录（原 ${list.length} 会话 / ${total} 条消息）；额度缓存 ${quotaRemoved} 个文件`,
+    );
     await dialog.showMessageBox({
       type: 'info',
       title: DISPLAY_NAME,
       message: '本地归档已清除。',
-      detail: `已删除 ${removed} 个账号目录（原 ${list.length} 个会话、${total} 条消息）。站点上的对话未受影响。`,
+      detail:
+        `已删除 ${removed} 个账号目录（原 ${list.length} 个会话、${total} 条消息）` +
+        `，以及 ${quotaRemoved} 个额度缓存文件。站点上的对话未受影响。`,
     });
   } catch (e) {
     self.lastClearArchiveError = String((e as Error)?.message ?? e);
@@ -650,6 +970,9 @@ async function doClearArchive(): Promise<void> {
 /**
  * 「导出归档」子菜单里"已归档会话"那部分（最多 6 条，按更新时间倒序）。
  * 每次右键重建菜单时动态生成，所以刚归档完的会话立刻就能导出。
+ *
+ * v1.1.4：保留**两级**结构（用户指定）—— 先点会话，再选 `Markdown`；
+ * JSON 出口已去掉，所以每条的子菜单里只有 Markdown 一项。
  */
 function buildArchivedConversationItems(): Electron.MenuItemConstructorOptions[] {
   const recent = (mirrorStore?.listConversations() ?? []).slice(0, 6);
@@ -660,10 +983,7 @@ function buildArchivedConversationItems(): Electron.MenuItemConstructorOptions[]
       const title = c.title.length > 22 ? `${c.title.slice(0, 22)}…` : c.title;
       return {
         label: `${title}（${c.messageCount} 条）`,
-        submenu: [
-          { label: 'Markdown', click: () => void doExportArchiveById(c.id, 'md') },
-          { label: 'JSON', click: () => void doExportArchiveById(c.id, 'json') },
-        ],
+        submenu: [{ label: 'Markdown', click: () => void doExportArchiveById(c.id) }],
       };
     }),
   ];
@@ -699,11 +1019,13 @@ function setupArchiveIpc(): void {
     return mirrorStore.readConversation(id);
   });
 
+  // v1.1.4：导出只剩 Markdown（用户要求去掉 JSON 出口）。
+  // 这里仍然校验 format —— 渲染进程不可信，不因为"界面上没这个按钮"就放宽校验。
   ipcMain.handle(CH_ARCHIVE.export, async (_e, id: unknown, format: unknown) => {
-    if (typeof id !== 'string' || id === '' || (format !== 'md' && format !== 'json')) {
+    if (typeof id !== 'string' || id === '' || format !== 'md') {
       return { ok: false, error: 'invalid-args' };
     }
-    await doExportArchiveById(id, format);
+    await doExportArchiveById(id);
     return { ok: true };
   });
 }
@@ -945,6 +1267,8 @@ async function deleteAccount(id: string): Promise<void> {
       removed.push('登录态/缓存');
     }
     removeKnownAccount(ACCOUNT_FILE, id);
+    // 额度缓存也属于"该账号的本地数据"，一并清掉（否则菜单里会残留已删除账号的旧额度）
+    quotaStore?.remove(id);
     self.lastDeleteAccount = { account: id, removed };
     console.log(`[account] 已删除账号 ${id} 的本地数据：${removed.join('、') || '（无）'}`);
     await dialog.showMessageBox({
@@ -964,15 +1288,27 @@ async function deleteAccount(id: string): Promise<void> {
   }
 }
 
-/** 账号子菜单（每次右键重建，因此新切换过的账号会立刻出现在 known 列表里）。 */
+/**
+ * 账号子菜单（每次右键重建，因此新切换过的账号会立刻出现在 known 列表里）。
+ *
+ * 用户要求：**每个账号后方显示该账号的模型额度**。
+ * 口径（已确认）：当前账号读实时快照；其余账号读磁盘缓存并标「缓存」，无缓存显示「未知」。
+ */
 function buildAccountMenuItems(): Electron.MenuItemConstructorOptions[] {
   const known = listKnownAccounts(join(USER_DATA_DIR, 'mirror'), readAccountState(ACCOUNT_FILE));
   const deletable = known.filter((id) => id !== ACCOUNT); // 当前账号不可删
   return [
-    ...known.map((id) => ({
-      label: id === ACCOUNT ? `● ${id}（当前）` : `   ${id}`,
-      click: () => switchAccount(id),
-    })),
+    ...known.map((id) => {
+      const isCurrent = id === ACCOUNT;
+      // 当前账号的内存快照由 handleQuotaJson 实时刷新；其余账号只能读磁盘缓存
+      const state = quotaStore?.get(id) ?? null;
+      const suffix = accountQuotaSuffix(state, !isCurrent);
+      const head = isCurrent ? `● ${id}（当前）` : `   ${id}`;
+      return {
+        label: `${head} · ${suffix}`,
+        click: () => switchAccount(id),
+      };
+    }),
     { type: 'separator' as const },
     { label: '添加自定义账号…', click: () => void addCustomAccount() },
     {
@@ -987,7 +1323,12 @@ function buildAccountMenuItems(): Electron.MenuItemConstructorOptions[] {
 
 /**
  * 每次右键都重建菜单，保证迷你窗/置顶勾选状态与**归档列表**都是最新。
- * 结构（用户指定顺序）：显示/隐藏 → 迷你窗 → 置顶窗口 → 导出归档 → 导出页面快照 → 诊断 → 退出。
+ *
+ * 结构（用户指定顺序，v1.1.4 起）：显示/隐藏 → 迷你窗 → 置顶窗口 → 查看本地归档 → 导出归档
+ * → 清除本地归档数据 → 诊断 → 账号 → 退出。
+ *
+ * v1.1.4 的两处删除（用户要求）：**取消页面快照导出**（原来的位置由「清除本地归档数据」接替），
+ * 导出归档只留 Markdown（JSON 出口去掉，标签里也不再显示"（结构化）"）。
  */
 function buildTrayMenu(): Menu {
   return Menu.buildFromTemplate([
@@ -1006,28 +1347,24 @@ function buildTrayMenu(): Menu {
     { type: 'separator' },
     { label: '查看本地归档…', click: () => openArchiveWindow() },
     {
-      // 先点"导出归档"，再在子菜单里选格式；
+      // 先点"导出归档"，再在子菜单里选会话；
       // 下面还会动态列出**最近归档的会话** —— 这样不把页面停在那个会话也能导出。
       label: '导出归档',
       submenu: [
-        { label: '当前会话 → Markdown（结构化）', click: () => void doExportArchive('md') },
-        { label: '当前会话 → JSON（结构化）', click: () => void doExportArchive('json') },
+        // 保留两级（用户指定）：先点「当前会话」，再选 Markdown —— 与下面的历史会话一致。
+        { label: '当前会话', submenu: [{ label: 'Markdown', click: () => void doExportArchive() }] },
         ...buildArchivedConversationItems(),
       ],
     },
-    {
-      label: '导出页面快照',
-      submenu: [
-        { label: 'Markdown', click: () => void doExport('md') },
-        { label: 'JSON', click: () => void doExport('json') },
-      ],
-    },
+    { label: '清除本地归档数据…', click: () => void doClearArchive() },
     { type: 'separator' },
     { label: '诊断（写日志）', click: () => void runSelectorProbe(true) },
     { type: 'separator' },
-    { label: '清除本地归档数据…', click: () => void doClearArchive() },
-    { type: 'separator' },
-    { label: `账号：${ACCOUNT}`, submenu: buildAccountMenuItems() },
+    {
+      // 账号行本身也带额度摘要 —— 不展开子菜单就能看到当前账号状态（用户要求）
+      label: `账号：${ACCOUNT} · ${quotaView?.quotaSummary ?? '额度未知'}`,
+      submenu: buildAccountMenuItems(),
+    },
     { type: 'separator' },
     { label: '退出', click: () => quit() },
   ]);
@@ -1035,7 +1372,8 @@ function buildTrayMenu(): Menu {
 
 function createTray(): void {
   tray = new Tray(makeTrayIcon());
-  tray.setToolTip(DISPLAY_NAME);
+  // 有快照就用它（含额度/禁言/会话用量），没有就先显示产品名
+  tray.setToolTip(quotaView ? formatTrayTooltip(quotaView, DISPLAY_NAME) : DISPLAY_NAME);
   tray.on('right-click', () => {
     tray?.popUpContextMenu(buildTrayMenu());
   });
@@ -1143,11 +1481,210 @@ async function setupProxy(): Promise<void> {
 }
 
 /**
+ * 限额可视化：存储初始化。
+ *
+ * 落盘 `userData/quota/<account>.json` —— 不进安装目录、不进工作区；
+ * 只存站点下发的额度/禁言/上限值，**不含任何凭据**（R1）。
+ */
+function setupQuotaStore(): void {
+  const baseDir = join(app.getPath('userData'), 'quota');
+  try {
+    quotaStore = new QuotaStore({
+      baseDir,
+      logger: { warn: (m) => console.warn(`[quota] ${m}`) },
+    });
+    self.quotaStoreDir = baseDir;
+    // 启动即用磁盘缓存渲染一次 —— 这样"上次登录的额度"立刻可见（用户要求：其余账号显示缓存）
+    refreshQuotaView();
+  } catch (e) {
+    self.quotaStoreError = String((e as Error)?.message ?? e);
+    console.error('[quota] QuotaStore 初始化失败：', self.quotaStoreError);
+  }
+}
+
+/**
+ * 重算展示快照 → 推给页面注入 + 刷新托盘。
+ *
+ * 调用时机：收到 chat/status、收到 model_configs、会话切换、SSE 结束。
+ * 幂等：同一份数据重复调用不会产生副作用（注入脚本自身也是幂等的）。
+ */
+function refreshQuotaView(): void {
+  if (!quotaStore) return;
+  const state = quotaStore.get(ACCOUNT);
+  const view = composeQuotaView(state, {
+    accountId: ACCOUNT,
+    modelType: currentModelType,
+    sessionTokens,
+    regenerateUsed: actionUsageKnown ? actionUsage.regenerateUsed : null,
+    editUsed: actionUsageKnown ? actionUsage.editUsed : null,
+    actionCountsEstimated: actionUsageEstimated,
+  });
+  quotaView = view;
+  self.quotaView = view;
+
+  void pushQuotaToPage(view);
+  updateTrayQuota(view);}
+
+/**
+ * 注入推送队列（N23）：`executeJavaScript` 并发调用时返回顺序不保证，
+ * 迟到的旧结果会把页面刚回报的新浮层坐标清成 null（状态被旧值覆盖）。
+ * 这里串行化：一次只推一个，后一次在前一次完成后才开始。
+ */
+let pushQueue: Promise<void> = Promise.resolve();
+
+/** 把展示数据推给页面注入层（失败只记日志 —— 增强层不许把外壳拖崩）。 */
+function pushQuotaToPage(view: QuotaView): void {
+  pushQueue = pushQueue
+    .then(() => pushQuotaToPageNow(view))
+    .catch((e) => {
+      console.warn(`[quota] 注入队列异常：${String((e as Error)?.message ?? e)}`);
+    });
+}
+
+async function pushQuotaToPageNow(view: QuotaView): Promise<void> {
+  const wc = activeWc();
+  if (!wc || wc.isDestroyed()) return;
+  // 错误页 / 空白页（about:blank）没有站点 DOM，注入只会白跑
+  const url = wc.getURL();
+  if (!isSameSiteUrl(url)) return;
+  try {
+    const script = buildQuotaInjectScript(view, { hidden: mini, pos: overlayPos });
+    const r = (await wc.executeJavaScript(script, true)) as {
+      ok?: boolean;
+      answers?: number;
+      composer?: number;
+      answerNodes?: number;
+      composerNodes?: number;
+      pos?: { x: number; y: number } | null;
+      hidden?: boolean;
+    };
+    self.quotaInject = r;
+    // 读回用户拖动后的位置：页面是位置的真相来源（SPA 内切会话不重载，位置天然保持），
+    // 主进程只是把它抄下来，供下次**页面重载**时恢复。null 表示用默认位置。
+    if (r?.pos && Number.isFinite(r.pos.x) && Number.isFinite(r.pos.y)) {
+      overlayPos = { x: Math.round(r.pos.x), y: Math.round(r.pos.y) };
+    } else if (r?.pos === null || r?.pos === undefined) {
+      overlayPos = null;
+    }
+    // 记录注入落点：`composerNodes` 是**锚点存在数**，
+    // 为 0 表示站点文案变了或当前页面本来就没有那行声明（诊断用，不是错误）。
+    console.log(
+      `[quota] 注入 → 输入栏 token ${r?.composer ?? 0}/${r?.composerNodes ?? 0} 处` +
+        ` · 浮层${r?.hidden === true ? '已隐藏（迷你窗）' : '显示'}` +
+        `${r?.pos ? ` · 位置(${r.pos.x},${r.pos.y})` : ' · 位置=默认(贴输入框)'}` +
+        `${r?.ok === true ? '' : '（脚本未返回 ok）'}`,
+    );
+  } catch (e) {
+    self.quotaInjectError = String((e as Error)?.message ?? e);
+    console.warn(`[quota] 注入失败：${self.quotaInjectError}`);
+  }
+}
+
+/** 托盘 tooltip + 账号菜单里的额度尾巴都要跟着更新。 */
+function updateTrayQuota(view: QuotaView): void {
+  try {
+    tray?.setToolTip(formatTrayTooltip(view, DISPLAY_NAME));
+  } catch {
+    /* 托盘销毁中 */
+  }
+}
+
+/**
+ * 处理一条被观测到的 JSON 响应（限额数据来源）。
+ *
+ * 三条通道各自解析、互不覆盖：
+ *  - `/chat/status` → 额度 + 禁言 + 服务端文案；
+ *  - `/client/settings` → `model_configs`（重新生成/修改次数上限、单次输入上限）；
+ *  - `/chat/history_messages` → 该会话累计已用 token（切会话时补）。
+ *
+ * 解析失败**不覆盖**已有数据（宁可显示旧值，也不把界面清空）。
+ */
+function handleQuotaJson(url: string, body: string): void {
+  if (!quotaStore) return;
+  let changed = false;
+
+  // 诊断开关：`DSK_QUOTA_DEBUG=1` 时把原始响应体写进日志。
+  // 这几条响应只含额度/上限/历史消息，不含凭据（R1 不涉及）；默认关闭，避免日志膨胀。
+  if (process.env.DSK_QUOTA_DEBUG === '1') {
+    const tail = url.includes('/chat/history_messages') ? body.slice(0, 400) : body;
+    console.log(`[quota-debug] ${url}\n${tail}`);
+  }
+
+  if (url.includes('/chat/status')) {
+    const status = parseChatStatusResponse(body);
+    if (status !== null) {
+      quotaStore.applyChatStatus(ACCOUNT, status);
+      self.quotaChatStatusAt = Date.now();
+      changed = true;
+    } else {
+      self.quotaParseError = `chat/status 解析失败（${body.length} 字符）`;
+    }
+  } else if (url.includes('/client/settings')) {
+    const configs = parseModelSettingsResponse(body);
+    if (configs !== null) {
+      quotaStore.applyModelConfigs(ACCOUNT, configs);
+      self.quotaModelConfigs = configs.length;
+      changed = true;
+    } else {
+      self.quotaParseError = `client/settings 解析失败（${body.length} 字符）`;
+    }
+  } else if (url.includes('/chat/history_messages')) {
+    const tokens = parseHistoryAccumulatedTokens(body);
+    const pageConv = extractConversationId(content?.currentUrl() ?? '');
+    const respConv = parseHistorySessionId(body);
+    // 归属：**响应体自带会话 id 时以它为准** —— 用户切走会话后旧会话的响应才到达，
+    // 只比当前页面 URL 会把 A 会话的用量/次数写进 B 会话（N15）。解析不到 id 时才退回宽松比对。
+    const belongs =
+      respConv !== null
+        ? pageConv === respConv
+        : pageConv === '' || pageConv === sessionTokensFor;
+    if (process.env.DSK_QUOTA_DEBUG === '1') {
+      console.log(
+        `[quota-debug] history tokens=${tokens} hasField=${body.includes('accumulated_token_usage')}` +
+          ` pageConv=${pageConv} respConv=${respConv} forConv=${sessionTokensFor} belongs=${belongs}`,
+      );
+    }
+    if (!belongs) return;
+
+    // 写缓存的会话：响应体给了 id 就用它（迟到响应也能落到正确会话），否则用当前采纳会话。
+    const targetConv = respConv ?? sessionTokensFor;
+
+    // 已用次数全量校准：history 的分支关系是权威口径（前端口径 = 分支兄弟数-1），
+    // 能解析出来时**覆盖**运行期累加值 —— 两个来源不会同时可用错（校准在请求之后到达）。
+    const usage = parseHistoryActionUsage(body);
+    if (usage !== null) {
+      actionUsage = usage;
+      actionUsageKnown = true;
+      actionUsageEstimated = false;
+      changed = true;
+      // 校准值也落盘：运行期累加可能在本次启动前就发生过（或页面重新加载）
+      if (targetConv !== '') quotaStore.setSessionActions(ACCOUNT, targetConv, usage);
+      if (process.env.DSK_QUOTA_DEBUG === '1') {
+        console.log(
+          `[quota-debug] history usage → 重新生成 ${usage.regenerateUsed} · 修改 ${usage.editUsed}`,
+        );
+      }
+    }
+    if (tokens !== null) {
+      sessionTokens = tokens;
+      // 记进按会话缓存：下次命中服务端缓存（history 返回空数组）时仍能显示
+      if (targetConv !== '') quotaStore.setSessionTokens(ACCOUNT, targetConv, tokens);
+      changed = true;
+    }
+  }
+
+  if (changed) refreshQuotaView();
+}
+
+/**
  * M2 第一步：网络通道镜像（**只读观测**页面自身产生的 SSE）。
  *
  * 当前是**探针阶段**：把真实 SSE 样本落盘到 `docs/m2-evidence/sse-samples/`，
  * 据此再写结构化解析器 —— 避免靠猜格式写解析逻辑。
- * 设 `DSK_CAPTURE_SSE=0` 可关闭样本落盘。
+ * 设 `DSK_CAPTURE_SSE=1` 显式开启样本落盘（**默认关闭**）。
+ *
+ * 为什么默认关：这些样本会写到**工作区**的 docs/m2-evidence/ 下，普通用户跑安装版时
+ * 目录可能不可写、也不该往程序目录里塞用户对话内容。只在开发/探针时显式打开。
  */
 function setupNetworkMirror(): void {
   const wc = activeWc();
@@ -1155,7 +1692,7 @@ function setupNetworkMirror(): void {
     self.mirrorSkipped = '内容视图尚未就绪';
     return;
   }
-  const capture = process.env.DSK_CAPTURE_SSE !== '0';
+  const capture = process.env.DSK_CAPTURE_SSE === '1';
   mirror = new NetworkMirror({
     sampleDir: capture ? join(ROOT, 'docs', 'm2-evidence', 'sse-samples') : '',
     requestSampleDir: capture ? join(ROOT, 'docs', 'm2-evidence', 'request-samples') : '',
@@ -1166,10 +1703,54 @@ function setupNetworkMirror(): void {
       const sessionId = extractSessionIdFromRequest(info.postData);
       self.lastUserRequestParse = { parsed: text !== null, chars: text?.length ?? 0, sessionId };
       if (text !== null) pendingUser = { text, sessionId };
+
+      // 当前模型标识：只作提示，必须能在 model_configs 里核对上才采用
+      const model = extractModelTypeFromRequest(info.postData);
+      if (model !== null && model !== currentModelType) {
+        const known = quotaStore?.get(ACCOUNT)?.modelConfigs ?? [];
+        // 核对：只有站点确实下发过这个模型的配置才认它，否则留着旧值（不猜）
+        if (known.length === 0 || known.some((c) => c.modelType === model)) {
+          currentModelType = model;
+        }
+      }
+
+      // 修改/重新生成已用次数：观测页面自己发出的 regenerate / edit_message 请求。
+      // 这是**即时**通道 —— 用户点一次按钮就 +1，不用等 history 回来；
+      // history 通道（handleQuotaJson）会给全量校准，两边谁新谁准由校准覆盖。
+      const action = classifyQuotaAction(info.url);
+      if (action !== null) {
+        if (action === 'regenerate') actionUsage.regenerateUsed += 1;
+        else actionUsage.editUsed += 1;
+        actionUsageKnown = true;
+        actionUsageEstimated = false;
+        // 落盘：否则重开应用次数归零，看起来像"额度回满了"。
+        // N22：会话 id 优先级 —— 已采纳会话 > 本次请求体里的 chat_session_id > 页面 URL。
+        // 首次进会话（sessionTokensFor 还是空）就点按钮时也有 id 可落，不会丢。
+        const actionConv =
+          sessionTokensFor ||
+          pendingUser?.sessionId ||
+          extractConversationId(content?.currentUrl() ?? '') ||
+          '';
+        if (actionConv !== '') {
+          quotaStore?.setSessionActions(ACCOUNT, actionConv, actionUsage);
+        }
+        console.log(
+          `[quota] 已用次数 → 重新生成 ${actionUsage.regenerateUsed} · 修改 ${actionUsage.editUsed}` +
+            `（来自 ${action === 'regenerate' ? '/chat/regenerate' : '/chat/edit_message'} 请求）`,
+        );
+        refreshQuotaView();
+      } else if (model !== null && model !== currentModelType) {
+        // 模型变化不是"次数"变化，只刷新展示（上面 if 里已 refreshQuotaView，这里避免双刷）
+        refreshQuotaView();
+      }
     },
     onSse: (info) => {
       self.lastSseSample = { url: info.url, chars: info.chars };
       archiveTurn(info);
+    },
+    // 限额数据：只观测页面自己已经发出的 GET 响应，不新增请求、不重放（R2）
+    onJson: (info) => {
+      handleQuotaJson(info.url, info.body);
     },
   });
   self.mirrorAttached = mirror.attach(wc);
@@ -1202,13 +1783,58 @@ function setupMirrorStore(): void {
  * 会话 id 取自**当前页面 URL**（流结束时新会话的 URL 已带上 id）。
  */
 function archiveTurn(info: { url: string; body: string }): void {
+  const pageUrl = content?.currentUrl() ?? '';
+  // 会话 id：优先用**请求体里的** `chat_session_id`（更早、更可靠），页面 URL 只作兜底
+  const conversationId = pendingUser?.sessionId ?? extractConversationId(pageUrl) ?? '';
+
+  /**
+   * 先更新"本会话累计 token" —— 它与归档可用性无关。
+   * 归档可能因 store 未就绪而跳过，但用户要看的用量仍应更新（否则 store 故障时用量也停更）。
+   */
+  const turn = parseDeepSeekSse(info.body);
+  if (turn.accumulatedTokens !== null) {
+    /**
+     * 归属保护 + 同会话取大。
+     *
+     * 两个真实风险：
+     * 1) 用户在 A 会话提问后立刻切到 B 会话，A 的流式回答才结束 —— 此时页面 URL 已经是 B，
+     *    若直接采纳就把 A 的用量写到 B 上了。所以只有会话 id 对得上才采纳。
+     * 2) 同会话里 SSE 的累计值偶尔会比 history 报的小（重连/续流会重放片段），直接覆盖会让
+     *    数字往回跳。累计量是单调的，取 max 才符合语义。
+     *
+     * `handleQuotaJson` 的历史消息分支本来就有归属判断，这里补上同样的保护。
+     */
+    const pageConv = extractConversationId(pageUrl) ?? '';
+    /**
+     * 判据是「**这条流属于哪个会话**」，不是「页面和上次是不是同一个」。
+     *
+     * 上一版写成 `pageConv === sessionTokensFor` 是错的：A 会话提问后切到 B，
+     * 此时 pageConv 与 sessionTokensFor 都是 B —— 自己跟自己相等，于是 A 的用量被写到了 B 上，
+     * 恰恰是这段保护本该挡住的情形。
+     *
+     * 正确判法：把流自己的 conversationId（来自请求体，最权威）与页面当前会话比对。
+     *  - conversationId 非空：它必须等于页面 URL 的会话，或等于 sessionTokensFor（历史累计起点）；
+     *  - conversationId 为空（请求体没带 id）：只能退而用页面 URL 与 sessionTokensFor 比。
+     */
+    const sameConv =
+      conversationId !== ''
+        ? pageConv === '' || pageConv === conversationId || sessionTokensFor === conversationId
+        : pageConv === sessionTokensFor;
+    if (sameConv && (sessionTokens === null || turn.accumulatedTokens > sessionTokens)) {
+      sessionTokens = turn.accumulatedTokens;
+      if (conversationId !== '') sessionTokensFor = conversationId;
+      // 记进按会话缓存（同 history 通道）：回答结束后这个值就是该会话的权威累计值
+      if (conversationId !== '') quotaStore?.setSessionTokens(ACCOUNT, conversationId, turn.accumulatedTokens);
+      refreshQuotaView();
+    } else if (!sameConv) {
+      self.archiveSkippedTokenConv = `${pageConv} != ${sessionTokensFor}`;
+    }
+  }
+
   if (!mirrorStore) {
     self.archiveSkipped = 'store-not-ready';
     return;
   }
-  const pageUrl = content?.currentUrl() ?? '';
-  // 会话 id：优先用**请求体里的** `chat_session_id`（更早、更可靠），页面 URL 只作兜底
-  const conversationId = pendingUser?.sessionId ?? extractConversationId(pageUrl);
   if (!conversationId) {
     self.archiveSkipped = 'no-conversation-id';
     console.log('[archive] 跳过：请求体与页面 URL 都没有会话 id');
@@ -1216,7 +1842,6 @@ function archiveTurn(info: { url: string; body: string }): void {
   }
 
   const createdAt = Date.now();
-  const turn = parseDeepSeekSse(info.body);
   const message = turnToMirrorMessage(turn, { conversationId, createdAt });
   if (!message) {
     self.archiveSkipped = 'empty-turn';
@@ -1377,12 +2002,39 @@ function runViewSelftest(): void {
 
   // 自动验证"迷你窗 ⇒ 必然置顶"的单向联动（skipShow=true 避免自检时窗口闪现）
   self.alwaysOnTopBeforeMini = win?.isAlwaysOnTop() ?? null;
+  // 进出迷你窗后**外框**必须回到原处：±100px 的旧容差测不出 BUG-4 那种 13px 级累积漂移，
+  // 这里用外框严格比较（≤2px）把回归钉死在自检里（N25/BUG-4）。
+  const outerBeforeMini = win?.getBounds() ?? null;
+  self.miniRoundTripOuterBefore = outerBeforeMini;
+  // 若历史基准过期（窗口在自检前被移动过、或自检正处在最大化堆栈里），setMini 会用旧基准
+  // 恢复 → 断言假失败且真的挪窗口（N37）。这里临时用当前外框作基准，测完还原。
+  const savedLastNormalBounds = lastNormalBounds;
+  if (outerBeforeMini) lastNormalBounds = outerBeforeMini;
   setMini(true, true);
   self.miniEnterForcesTop = win?.isAlwaysOnTop() ?? null;
   self.miniEnterDisablesResize = (win?.isResizable() ?? null) === false;
   setMini(false, true);
+  const outerAfterMini = win?.getBounds() ?? null;
+  self.miniRoundTripOuterAfter = outerAfterMini;
+  // 第二轮往返：BUG-5 是"第二次退出卡在迷你尺寸"，只测一轮抓不到（基准会被第一次污染）。
+  setMini(true, true);
+  setMini(false, true);
+  const outerAfterMini2 = win?.getBounds() ?? null;
+  self.miniRoundTrip2OuterAfter = outerAfterMini2;
+  const closeEnough = (a: Electron.Rectangle | null, b: Electron.Rectangle | null): boolean =>
+    !!a &&
+    !!b &&
+    Math.abs(a.width - b.width) <= 2 &&
+    Math.abs(a.height - b.height) <= 2 &&
+    Math.abs(a.x - b.x) <= 2 &&
+    Math.abs(a.y - b.y) <= 2;
+  self.miniRoundTripBoundsStable = closeEnough(outerAfterMini, outerBeforeMini);
+  self.miniRoundTrip2BoundsStable = closeEnough(outerAfterMini2, outerBeforeMini);
+  if (savedLastNormalBounds) lastNormalBounds = savedLastNormalBounds;
   self.miniExitRestoresResize = win?.isResizable() ?? null;
-  self.miniExitRestoresTopPolicy = win?.isAlwaysOnTop() ?? null;
+  // 名字直说它测的是什么：退出迷你窗后置顶状态**恢复到进入前**（而不是"保持某种策略"）。
+  // 之前叫 miniExitRestoresTopPolicy，读起来像"是否恢复了某种置顶策略"，容易被误解为断言失败。
+  self.miniExitAlwaysOnTopEqualsBefore = (win?.isAlwaysOnTop() ?? null) === self.alwaysOnTopBeforeMini;
   // 迷你窗隐藏任务栏；退出时必须恢复，否则窗口永久从任务栏消失
   self.miniExitRestoresTaskbar = (self.miniSteps as string[]).includes('setSkipTaskbar(false)');
   self.miniEnterHidesTaskbar = true; // 由 setMini 的步骤日志见证（selftest 不改变窗口可见性）
@@ -1439,19 +2091,24 @@ function runViewSelftest(): void {
 
 /** 导出与代理的纯函数自检（不依赖 DOM 与网络）。 */
 function runUtilSelftest(): void {
-  const fake = { title: '自检会话', url: `${SITE_ORIGIN}/a/chat/s/self-test`, text: '自检正文' };
-  const md = renderSnapshotMarkdown(fake, 1791598000000);
-  const js = renderSnapshotJson(fake, 1791598000000);
-  self.exportMarkdownHasAiNotice = md.includes(AI_NOTICE_TEXT);
-  self.exportJsonHasAiNotice = js.includes(AI_NOTICE_TEXT);
-  self.exportMarkdownFirstBlockIsNotice = md.split('\n')[0]?.includes(AI_NOTICE_TEXT) ?? false;
-  self.exportJsonParsesWithFlag = (() => {
-    try {
-      return (JSON.parse(js) as { aiGenerated?: boolean }).aiGenerated === true;
-    } catch {
-      return false;
-    }
-  })();
+  // v1.1.4：页面快照导出已取消，R3 断言改为校验**归档产物**（仍然要求 AI 生成标识是第一块）
+  const fakeConv: ConversationMirror = {
+    id: 'self-test',
+    accountId: 'personal',
+    title: '自检会话',
+    url: `${SITE_ORIGIN}/a/chat/s/self-test`,
+    updatedAt: 1791598000000,
+    messages: [
+      { id: 'self-test-1', role: 'user', text: '自检正文', createdAt: 1791598000000, aiGenerated: true },
+    ],
+    source: 'network',
+    fidelity: 'full',
+  };
+  const md = renderArchive(fakeConv, 'md', 1791598000000);
+  self.exportMarkdownHasAiNotice = md.hasNotice;
+  self.exportMarkdownContainsNotice = md.content.includes(AI_NOTICE_TEXT);
+  self.exportMarkdownFirstBlockIsNotice = md.content.split('\n')[0]?.includes(AI_NOTICE_TEXT) ?? false;
+  self.exportMarkdownFilename = md.filename;
 
   self.proxyPacHttpRejected = normalizeProxyConfig({ mode: 'pac', pacUrl: 'http://x/p.pac' }).pacUrl === undefined;
   self.proxyManualNeedsRules = validateProxyConfig({ mode: 'manual' }).ok === false;
@@ -1483,10 +2140,30 @@ function runUtilSelftest(): void {
   // 托盘菜单结构（用户指定）—— 固化成断言，避免以后改乱顺序或漏掉子菜单
   const menu = buildTrayMenu();
   self.trayMenuLabels = menu.items.map((i) => (i.type === 'separator' ? '---' : i.label || i.type));
-  self.archiveSubmenuLabels = menu.items.find((i) => i.label === '导出归档')?.submenu?.items.map((i) => i.label) ?? null;
-  self.snapshotSubmenuLabels =
-    menu.items.find((i) => i.label === '导出页面快照')?.submenu?.items.map((i) => i.label) ?? null;
+  // v1.1.4：页面快照导出整项已移除；导出归档只剩 Markdown，标签里不再有"（结构化）"
+  self.snapshotItemRemoved = !menu.items.some((i) => String(i.label).includes('页面快照'));
+  const archiveItem = menu.items.find((i) => i.label === '导出归档');
+  self.archiveSubmenuLabels = archiveItem?.submenu?.items.map((i) => i.label) ?? null;
+  // v1.1.4：两级结构 —— 第 0 项是「当前会话」（有 submenu，里面只有 Markdown），
+  // 分隔线之后的历史会话每条也有 submenu（同样只有 Markdown）；且整个子菜单里不得出现 JSON。
+  const archiveEntries = (archiveItem?.submenu?.items ?? []).filter((i) => i.type !== 'separator');
+  self.archiveSubmenuHasJson = archiveEntries.some((i) =>
+    String(i.label).toUpperCase().includes('JSON'),
+  );
+  self.archiveSubmenuHasStructuredSuffix = archiveEntries.some((i) =>
+    String(i.label).includes('（结构化）'),
+  );
+  self.archiveSubmenuCurrentIsSubmenu =
+    archiveEntries[0]?.submenu?.items.map((i) => i.label).join('/') === 'Markdown';
+  self.archiveSubmenuHistoryAllMdOnly = archiveEntries
+    .slice(1)
+    .every((i) => i.submenu?.items.length === 1 && i.submenu.items[0]?.label === 'Markdown');
   self.diagnosisIsPlainItem = menu.items.some((i) => i.label === '诊断（写日志）' && !i.submenu);
+  // 用户指定顺序：清除本地归档数据紧跟在导出归档之后
+  const labels = menu.items.map((i) => String(i.label ?? ''));
+  const iArchive = labels.indexOf('导出归档');
+  const iClear = labels.findIndex((l) => l.startsWith('清除本地归档数据'));
+  self.clearArchiveFollowsExport = iArchive >= 0 && iClear === iArchive + 1;
 
   // 账号菜单：标签应含当前账号；子菜单应列出候选账号 + 退出登录
   const accountItem = menu.items.find((i) => String(i.label).startsWith('账号：'));
@@ -1515,6 +2192,41 @@ function runUtilSelftest(): void {
   self.accountFile = ACCOUNT_FILE;
   self.logFileConfigured = typeof self.logFile === 'string';
   self.logFileExists = typeof self.logFile === 'string' ? existsSync(self.logFile) : false;
+
+  /* ------------------------------------------------ 限额可视化（v1.1.0）自检 */
+  // 这一组断言的意义：额度是"拿不到就退化成未知"的功能，最容易悄悄坏掉而没人发现。
+  // 因此把「存储就绪 / 快照可组装 / 托盘行文 / 注入脚本可生成且不含红线 API」全部固化成证据。
+  self.quotaStoreReady = quotaStore !== null;
+  self.quotaViewPresent = quotaView !== null;
+  self.quotaViewSummary = quotaView?.quotaSummary ?? null;
+  self.quotaTooltipLineCount = quotaView ? formatTrayTooltip(quotaView, DISPLAY_NAME).split('\n').length : 0;
+  self.quotaAccountSuffixes = (
+    menu.items.find((i) => String(i.label).startsWith('账号：'))?.submenu?.items ?? []
+  )
+    .map((i) => String(i.label))
+    .filter((l) => l.includes(' · '));
+  try {
+    // 用真实选项生成一遍：隐藏态（迷你窗）与拖动位置都必须能通过脚本拼装（v1.1.2）
+    const probeView = quotaView ?? composeQuotaView(null, { accountId: ACCOUNT });
+    const inject = buildQuotaInjectScript(probeView);
+    const hiddenInject = buildQuotaInjectScript(probeView, { hidden: true, pos: { x: 100, y: 100 } });
+    const reset = buildQuotaResetScript();
+    self.quotaInjectScriptChars = inject.length;
+    self.quotaResetScriptChars = reset.length;
+    // 与 tests/unit/quota-overlay.test.ts 同性质的红线断言，放在运行期再复核一遍
+    self.quotaInjectScriptClean =
+      !/\.value\b/.test(inject) &&
+      !inject.includes('localStorage') &&
+      !inject.includes('sessionStorage') &&
+      !inject.includes('XMLHttpRequest') &&
+      !inject.includes('fetch(');
+    self.quotaInjectScriptCleanReset = !/\.value\b/.test(reset) && !reset.includes('localStorage');
+    // v1.1.2：回答徽标已移除；隐藏与位置选项确实进了脚本
+    self.quotaInjectNoBadge = !inject.includes('dsk-quota-badge');
+    self.quotaInjectHiddenSupported = hiddenInject.includes('const HIDDEN = true;');
+  } catch (e) {
+    self.quotaInjectScriptError = String((e as Error)?.message ?? e);
+  }
 }
 
 let finished = false;
@@ -1560,12 +2272,26 @@ async function runMiniRestoreVerification(): Promise<void> {
     settled.x > -10000 &&
     settled.y > -10000;
 
+  // 迷你窗字号必须真的缩小（用户要求"方便阅读"）—— 读回 WebContents 的实际值，
+  // 而不是断言我们设过的常量（setZoomFactor 在页面未就绪时会静默不生效）。
+  const wcInMini = activeWc();
+  self.miniZoomFactor = wcInMini && !wcInMini.isDestroyed() ? wcInMini.getZoomFactor() : null;
+  self.miniZoomApplied =
+    typeof self.miniZoomFactor === 'number' &&
+    Math.abs(self.miniZoomFactor - MINI_ZOOM_FACTOR) < 0.01;
+
   setMini(false, true);
   await delay(500);
   const back = win.getContentBounds();
   self.miniExitFromMaxMinBoundsSettled = back;
   self.miniExitFromMaxMinSaneSettled =
     back.width >= 200 && back.height >= 200 && back.x > -10000 && back.y > -10000;
+
+  const wcAfter = activeWc();
+  self.zoomAfterMiniExit = wcAfter && !wcAfter.isDestroyed() ? wcAfter.getZoomFactor() : null;
+  self.zoomRestored =
+    typeof self.zoomAfterMiniExit === 'number' &&
+    Math.abs(self.zoomAfterMiniExit - NORMAL_ZOOM_FACTOR) < 0.01;
 }
 
 function finishSelftest(): void {
@@ -1617,6 +2343,10 @@ function main(): void {
       setupSession();
       await setupProxy();
       createWindow();
+      // 限额存储必须在 `content.load()` **之前**就绪：页面一加载就会触发 onNavigated，
+      // 那里要读"该会话上次已知的已用 token"（history_messages 命中缓存时拿不到）。
+      // 顺序错会导致打开旧会话时 token 行短暂显示原文。
+      setupQuotaStore();
       content?.load();
       createTray();
       content?.syncBounds();
@@ -1646,6 +2376,8 @@ function main(): void {
     console.log(
       `[t1] window shown: visible=${win?.isVisible()} bounds=${JSON.stringify(win?.getContentBounds())}`,
     );
+    // 调试入口：直接进迷你窗态（托盘菜单点不到，自动化验证需要它）
+    if (DEBUG_START_MINI) setMini(true);
     app.on('second-instance', () => {
       win?.show();
       win?.focus();
